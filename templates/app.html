@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AFS GPT</title>
+  <link rel="icon" href="/favicon.ico?v={{ brand_icon_version|default:'20260416' }}" type="image/x-icon" />
+  <link rel="icon" href="/brand-icon.png?v={{ brand_icon_version|default:'20260416' }}" type="image/png" sizes="64x64" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20260442" />
+</head>
+<body class="chatgpt-theme">
+  <div class="app-shell">
+    <div id="sidebar-backdrop" class="sidebar-backdrop hidden" aria-hidden="true"></div>
+
+    <aside id="sidebar" class="sidebar" aria-label="侧边栏">
+      <div class="sidebar-inner">
+        <div class="sidebar-brand-row">
+          <span class="sidebar-brand">AFS GPT</span>
+          <div class="sidebar-brand-actions">
+            <button type="button" id="btn-conv-search" class="icon-btn sidebar-icon-btn" title="搜索聊天" aria-label="搜索聊天">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            </button>
+            <button type="button" id="btn-sidebar-collapse" class="icon-btn sidebar-icon-btn" title="收起侧边栏" aria-label="收起侧边栏">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="sidebar-search-wrap" class="sidebar-search-wrap hidden">
+          <input type="search" id="conv-search-input" class="conv-search-input" placeholder="搜索聊天…" autocomplete="off" aria-label="搜索聊天" />
+        </div>
+        <div class="sidebar-top">
+          <button type="button" id="btn-new-chat" class="new-chat-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            <span>新聊天</span>
+          </button>
+        </div>
+
+        <div class="sidebar-scroll">
+          <div id="conversation-groups" class="conv-groups"></div>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="user-menu-wrap">
+            <button type="button" id="btn-user-menu" class="user-menu-btn" aria-expanded="false">
+              <span class="user-avatar-wrap">
+                <span id="user-avatar" class="user-avatar">U</span>
+                <span id="avatar-pending-badge" class="avatar-pending-badge hidden" aria-hidden="true"></span>
+              </span>
+              <span id="username-label" class="user-name">用户</span>
+            </button>
+            <div id="user-dropdown" class="user-dropdown hidden" role="menu">
+              <button type="button" id="btn-admin-approvals" class="user-dropdown-admin hidden" role="menuitem">
+                注册审批<span id="pending-approval-badge" class="user-menu-badge hidden"></span>
+              </button>
+              <button type="button" id="btn-admin-users" class="user-dropdown-admin hidden" role="menuitem">用户管理</button>
+              <button type="button" id="btn-logout" role="menuitem">退出登录</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <button type="button" id="btn-sidebar-open" class="icon-btn sidebar-open-btn" title="打开侧边栏" aria-label="打开侧边栏">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
+        <div class="model-picker-wrap" id="model-picker-wrap">
+          <button type="button" class="model-selector" id="model-selector" aria-expanded="false" aria-haspopup="dialog">
+            <span id="chat-model-label">对话模型</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div id="model-picker" class="model-picker hidden" role="dialog" aria-label="选择模型">
+            <div class="model-picker-section">
+              <div class="model-picker-title">对话模型</div>
+              <ul id="chat-model-list" class="model-picker-list" role="listbox"></ul>
+            </div>
+            <div class="model-picker-section">
+              <div class="model-picker-title">识图模型（上传图片分析）</div>
+              <ul id="vision-model-list" class="model-picker-list" role="listbox"></ul>
+            </div>
+            <div class="model-picker-section">
+              <div class="model-picker-title">生图模型</div>
+              <ul id="image-model-list" class="model-picker-list" role="listbox"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="topbar-spacer"></div>
+        <button type="button" id="btn-share-chat" class="topbar-share-btn" title="分享当前对话" aria-label="分享当前对话" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 16V4M12 4l4 4M12 4L8 8"/>
+            <path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
+          </svg>
+          <span>分享</span>
+        </button>
+      </header>
+
+      <div id="share-chat-banner" class="share-chat-banner hidden" role="note"></div>
+
+      <div class="thread-container" id="thread-container">
+        <div id="empty-state" class="empty-state hidden">
+          <h1>有什么可以帮忙的？</h1>
+        </div>
+        <div id="messages" class="thread" role="log" aria-live="polite"></div>
+      </div>
+
+      <footer class="composer-dock">
+        <div id="gen-progress" class="gen-progress hidden" role="status" aria-live="polite">
+          <div class="gen-progress-inner">
+            <span class="gen-progress-spinner" aria-hidden="true"></span>
+            <span class="gen-progress-label"></span>
+            <button type="button" class="gen-cancel-btn hidden" aria-label="停止生成">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+              <span class="gen-cancel-btn-text">停止生成</span>
+            </button>
+          </div>
+        </div>
+        <div class="composer-outer">
+          <div class="composer-box" id="composer-box">
+            <button type="button" id="btn-tools" class="composer-icon-btn" title="工具与附件" aria-label="工具与附件">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+
+            <div class="composer-input-wrap">
+              <div id="attachment-preview" class="attachment-preview-row hidden">
+                <div id="attachment-preview-list" class="attachment-preview-list" aria-label="已选参考图"></div>
+                <button type="button" id="btn-clear-attachment" class="attachment-clear-all" aria-label="清除全部参考图">清除</button>
+              </div>
+              <textarea
+                id="prompt-input"
+                rows="1"
+                placeholder="询问任何问题"
+                aria-label="消息输入框"
+              ></textarea>
+            </div>
+
+            <button type="button" id="btn-send" class="send-btn" disabled aria-label="发送">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+
+          <div id="tools-panel" class="tools-panel hidden">
+            <label class="tools-row">
+              <span>上传参考图</span>
+              <input type="file" id="file-input" accept="image/*" multiple hidden />
+              <button type="button" class="tools-action" id="btn-pick-file">选择图片</button>
+            </label>
+            <label class="tools-row">
+              <span>生图模型</span>
+              <select id="image-model" class="tools-select"></select>
+            </label>
+            <label class="tools-row">
+              <span>模特肤色</span>
+              <select id="cast-skin-preset" class="tools-select" title="套图人物默认肤色">
+                <option value="caucasian" selected>白人 / 浅肤（默认）</option>
+                <option value="diverse">多肤色混合</option>
+                <option value="black_only">仅深肤 / 黑人模特</option>
+              </select>
+            </label>
+            <div class="tools-row tools-hint">
+              <span id="active-models-hint" class="muted"></span>
+            </div>
+            <label class="tools-row">
+              <span>套图模板</span>
+              <select id="plan-template" class="tools-select">
+                <option value="auto" selected>自动识别</option>
+                <option value="tk_mx_ecommerce_9">TK墨西哥 9 图（1主图+1白底+7详情）</option>
+                <option value="generic">通用套图</option>
+                <option value="photo_refine">参考图优化（去 AI 感 / 修图 1 张）</option>
+              </select>
+            </label>
+            <label class="tools-row">
+              <span>套图数量</span>
+              <select id="image-count" class="tools-select">
+                <option value="1">1 张</option>
+                <option value="3">3 张</option>
+                <option value="6">6 张</option>
+                <option value="9" selected>9 张</option>
+                <option value="12">12 张</option>
+              </select>
+            </label>
+            <label class="tools-row tools-check">
+              <input type="checkbox" id="mode-generate" />
+              <span>强制套图模式（不勾选也可识别「生成 N 张图」）</span>
+            </label>
+          </div>
+
+          <p class="composer-disclaimer">Intelligent Agent 可能会犯错。请核查重要信息。</p>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div id="image-lightbox" class="image-lightbox hidden" role="dialog" aria-modal="true" aria-label="查看与修复套图">
+    <button type="button" id="lightbox-backdrop" class="lightbox-backdrop" aria-label="关闭"></button>
+    <div class="lightbox-panel">
+      <button type="button" id="lightbox-close" class="lightbox-close" aria-label="关闭">×</button>
+      <div id="lightbox-view-mode" class="lightbox-mode lightbox-view-mode">
+        <div class="lightbox-view-layout">
+        <div class="lightbox-center-column">
+        <div class="lightbox-main-row">
+        <aside id="lightbox-strip-wrap" class="lightbox-strip-wrap" aria-label="套图缩略目录">
+          <div id="lightbox-strip" class="lightbox-strip" role="tablist" aria-orientation="vertical"></div>
+        </aside>
+        <div class="lightbox-preview-main">
+          <div class="lightbox-preview-stage">
+            <img id="lightbox-img" alt="" title="点击放大 / 缩小" />
+          </div>
+        </div>
+        </div>
+        <p id="lightbox-caption" class="lightbox-caption"></p>
+        </div>
+        <section class="lightbox-refine-card" aria-label="修复设置">
+          <header class="lightbox-refine-card-head">
+            <h2 class="lightbox-refine-title">局部修复</h2>
+            <p class="lightbox-refine-hint">
+              参考 <span class="lightbox-refine-tag">商品原图</span>
+              <span class="lightbox-refine-plus">+</span>
+              <span class="lightbox-refine-tag">当前成图</span>
+              双图生成，确认后才会替换套图槽位。
+            </p>
+          </header>
+          <div class="lightbox-refine-form">
+            <div class="lightbox-field">
+              <label class="lightbox-field-label" for="lightbox-refine-image-model">生图模型</label>
+              <select
+                id="lightbox-refine-image-model"
+                class="lightbox-field-control lightbox-refine-select"
+                aria-label="修复使用的生图模型"
+              ></select>
+            </div>
+            <div class="lightbox-field">
+              <label class="lightbox-field-label" for="lightbox-refine-prompt">修复说明</label>
+              <textarea
+                id="lightbox-refine-prompt"
+                class="lightbox-field-control lightbox-refine-prompt"
+                rows="3"
+                placeholder="例如：牙膏在画面中略缩小；模特更自然；背景虚化；包装与商品原图一致…"
+              ></textarea>
+            </div>
+          </div>
+          <footer class="lightbox-refine-footer">
+            <p id="lightbox-refine-status" class="lightbox-refine-status hidden" role="status"></p>
+            <button type="button" id="lightbox-refine-submit" class="lightbox-refine-submit">
+              生成修复版
+            </button>
+            <button type="button" id="lightbox-download-all" class="lightbox-download-all" aria-label="下载本套全部成图">
+              下载全部图片
+            </button>
+          </footer>
+        </section>
+        </div>
+      </div>
+      <div id="lightbox-compare-mode" class="lightbox-mode hidden">
+        <p class="lightbox-compare-title">对比预览 · 确认后才会替换套图中的原图</p>
+        <div class="lightbox-compare-row">
+          <figure class="lightbox-compare-fig">
+            <figcaption>当前槽位</figcaption>
+            <img id="lightbox-compare-original" alt="当前成图" />
+          </figure>
+          <figure class="lightbox-compare-fig">
+            <figcaption>修复候选</figcaption>
+            <img id="lightbox-compare-candidate" alt="修复候选" />
+          </figure>
+        </div>
+        <div class="lightbox-compare-actions">
+          <button type="button" id="lightbox-apply" class="lightbox-primary-btn">替换原图</button>
+          <button type="button" id="lightbox-keep" class="lightbox-secondary-btn">保留原图</button>
+          <button type="button" id="lightbox-retry" class="lightbox-secondary-btn">再试一版</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="admin-approvals-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="admin-approvals-title">
+    <div class="admin-modal-backdrop" data-admin-close="approvals"></div>
+    <div class="admin-modal-panel">
+      <header class="admin-modal-header">
+        <h2 id="admin-approvals-title">注册审批</h2>
+        <button type="button" class="admin-modal-close" data-admin-close="approvals" aria-label="关闭">×</button>
+      </header>
+      <p class="admin-modal-hint muted">新用户注册后需在此通过审批方可登录使用。</p>
+      <div id="admin-approvals-list" class="admin-list"></div>
+      <p id="admin-approvals-empty" class="admin-empty muted hidden">暂无待审批注册</p>
+    </div>
+  </div>
+
+  <div id="share-chat-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="share-chat-title">
+    <div class="admin-modal-backdrop" data-share-close></div>
+    <div class="admin-modal-panel share-chat-panel">
+      <header class="admin-modal-header">
+        <h2 id="share-chat-title">分享对话</h2>
+        <button type="button" class="admin-modal-close" data-share-close aria-label="关闭">×</button>
+      </header>
+      <p class="admin-modal-hint muted">将当前聊天内容复制一份给对方；对方侧栏会标注由谁分享。</p>
+      <input type="search" id="share-user-search" class="admin-users-search" placeholder="搜索用户名或真实名称…" autocomplete="off" aria-label="搜索用户" />
+      <div id="share-user-list" class="share-user-list"></div>
+      <p id="share-user-empty" class="admin-empty muted hidden">没有可分享的用户</p>
+    </div>
+  </div>
+
+  <div id="admin-users-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="admin-users-title">
+    <div class="admin-modal-backdrop" data-admin-close="users"></div>
+    <div class="admin-modal-panel admin-modal-panel-wide admin-users-panel">
+      <header class="admin-modal-header">
+        <h2 id="admin-users-title">用户管理</h2>
+        <button type="button" class="admin-modal-close" data-admin-close="users" aria-label="关闭">×</button>
+      </header>
+      <div class="admin-users-toolbar">
+        <input type="search" id="admin-users-search" class="admin-users-search" placeholder="搜索用户名或真实名称…" autocomplete="off" aria-label="搜索用户" />
+        <select id="admin-users-active-filter" class="admin-users-filter" aria-label="按启用状态筛选">
+          <option value="all">全部账号</option>
+          <option value="true">仅启用</option>
+          <option value="false">仅停用</option>
+        </select>
+      </div>
+      <div id="admin-users-list" class="admin-list admin-users-scroll"></div>
+      <p id="admin-users-empty" class="admin-empty muted hidden">没有符合条件的用户</p>
+      <footer class="admin-users-pagination">
+        <span id="admin-users-page-info" class="admin-users-page-info muted"></span>
+        <div class="admin-users-page-actions">
+          <button type="button" id="admin-users-prev" class="admin-btn admin-btn-reject" disabled>上一页</button>
+          <button type="button" id="admin-users-next" class="admin-btn admin-btn-reject" disabled>下一页</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    window.IA_CHAT = {
+      initialMessageLimit: {{ chat_initial_message_limit|default:10 }},
+      olderMessagePageSize: {{ chat_older_message_page_size|default:10 }},
+      maxReferenceImages: {{ max_reference_images|default:8 }},
+    };
+  </script>
+  <script src="/static/js/markdown.js?v=20260330"></script>
+  <script src="/static/js/chat-cache.js?v=20260404"></script>
+  <script src="/static/js/lazy-media.js?v=20260411"></script>
+  <script src="/static/js/app.js?v=20260443"></script>
+</body>
+</html>

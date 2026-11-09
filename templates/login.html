@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+
+  <meta charset="UTF-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <title>登录 - AFS GPT</title>
+
+  <link rel="icon" href="/favicon.ico?v=20260416" type="image/x-icon" />
+
+  <link rel="icon" href="/brand-icon.png?v=20260416" type="image/png" sizes="64x64" />
+
+  <link rel="stylesheet" href="/static/css/app.css?v=20260438" />
+
+</head>
+
+<body class="auth-page chatgpt-theme">
+
+  <div class="auth-card">
+
+    <h1>欢迎回来</h1>
+
+    <p class="muted">登录 Intelligent Agent · 对话与套图生成</p>
+
+    <div id="auth-error" class="error hidden"></div>
+
+    <form id="login-form">
+
+      <label for="login-username">用户名</label>
+
+      <input id="login-username" name="username" required autocomplete="username" />
+
+      <label for="login-password">密码</label>
+
+      <input id="login-password" name="password" type="password" required autocomplete="current-password" />
+
+      <button type="submit">继续</button>
+
+    </form>
+
+    <p class="auth-foot muted"><a href="/register/">没有账号？去注册</a></p>
+
+  </div>
+
+  <script src="/static/js/auth.js"></script>
+
+</body>
+
+</html>
+

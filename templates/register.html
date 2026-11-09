@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>注册 - AFS GPT</title>
+  <link rel="icon" href="/favicon.ico?v=20260416" type="image/x-icon" />
+  <link rel="icon" href="/brand-icon.png?v=20260416" type="image/png" sizes="64x64" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20260438" />
+</head>
+<body class="auth-page chatgpt-theme">
+  <div class="auth-card">
+    <h1>创建账号</h1>
+    <p class="muted">提交后需超级管理员审批，通过后方可登录</p>
+    <div id="auth-error" class="error hidden"></div>
+    <form id="register-form">
+      <label for="reg-real-name">真实名称</label>
+      <input id="reg-real-name" name="real_name" required placeholder="例如：忘羡" autocomplete="name" />
+      <label for="reg-username">用户名（登录用）</label>
+      <input id="reg-username" name="username" required placeholder="例如：wangxian" autocomplete="username" />
+      <label for="reg-password">密码（至少 6 位）</label>
+      <input id="reg-password" name="password" type="password" required minlength="6" autocomplete="new-password" />
+      <button type="submit">提交注册申请</button>
+    </form>
+    <p id="auth-success" class="success hidden"></p>
+    <p class="auth-foot muted"><a href="/login/">已有账号？去登录</a></p>
+  </div>
+  <script src="/static/js/register.js"></script>
+</body>
+</html>
