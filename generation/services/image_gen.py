@@ -39,11 +39,23 @@ def generate_image_file(
             )
             full_prompt = prefix + prompt
             if len(refs) > 1:
-                full_prompt = (
-                    f"Multiple product reference images ({len(refs)}) are attached — different SKUs, "
-                    "colorways, or angles of the same listing. Follow this frame's variant instructions. "
-                    + full_prompt
-                )
+                if reference_purpose == "reference_guided_layout":
+                    full_prompt = (
+                        "Director shot: earlier attachment(s) lock product SKU; "
+                        "later attachment(s) lock layout/composition — follow mimic_instruction_en. "
+                        + full_prompt
+                    )
+                elif reference_purpose == "reference_guided":
+                    full_prompt = (
+                        "Director shot with multiple references — follow reference_modes for each attachment. "
+                        + full_prompt
+                    )
+                else:
+                    full_prompt = (
+                        f"Multiple product reference images ({len(refs)}) are attached — different SKUs, "
+                        "colorways, or angles of the same listing. Follow this frame's variant instructions. "
+                        + full_prompt
+                    )
         try:
             content = generate_image_bytes(
                 prompt=full_prompt,

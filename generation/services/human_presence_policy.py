@@ -45,9 +45,10 @@ _STRIP_HUMAN_PRIORITY: list[tuple[int, str]] = [
     (9, "lifestyle_payoff"),
     (3, "pain_empathy"),
     (1, "hero_hook"),
-    (7, "ease_objection"),
     (4, "usp_primary"),
 ]
+
+_PROTECT_HUMAN_FRAME7_ROLES = frozenset({"ease_objection", "lifestyle_payoff"})
 
 
 def resolve_human_budget(batch_index: int, pack: dict | None = None) -> dict:
@@ -86,7 +87,9 @@ def _set_mode(shot: dict, mode: str) -> None:
 
 
 def apply_human_presence_policy(plan: dict, *, pack: dict, batch_index: int) -> dict:
-    if plan.get("plan_template") != "tk_mx_ecommerce_9":
+    from generation.services.listing_bundle import is_listing_ecommerce_plan
+
+    if not is_listing_ecommerce_plan(plan):
         return plan
 
     budget = resolve_human_budget(batch_index, pack)
@@ -115,9 +118,9 @@ def apply_human_presence_policy(plan: dict, *, pack: dict, batch_index: int) -> 
         if f4 == "none":
             _set_mode(frame4, "none")
             frame4["transformation_story_lock"] = (
-                "BEFORE/AFTER STORY — Single frame transformation WITHOUT portrait faces: "
-                "use lighting, color grading, product state, skin texture crop (no eyes/nose), "
-                "or split visual weight left/right; product SKU prominent. No collage grid."
+                "PAIN TRANSFORMATION — Single-frame before→after visual WITHOUT comparison captions "
+                "(no antes/después/before/after/使用前/使用后). Lighting, product/skin state only; "
+                "no generic-vs-hero layout; no portrait faces; no collage grid; SKU prominent."
             )
         else:
             _set_mode(frame4, f4)
@@ -158,11 +161,13 @@ def apply_human_presence_policy(plan: dict, *, pack: dict, batch_index: int) -> 
             shot = by_idx.get(idx)
             if not shot or (shot.get("role") or "") != role:
                 continue
+            if idx == 7 and role in _PROTECT_HUMAN_FRAME7_ROLES:
+                continue
             mode = (shot.get("human_cast_mode") or "").lower()
             if mode == "none":
                 continue
             if mode in ("face", "full"):
-                _set_mode(shot, "hands" if hands_n < max_hands and idx == 7 else "none")
+                _set_mode(shot, "none")
             elif mode == "hands":
                 _set_mode(shot, "none")
             else:

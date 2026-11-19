@@ -48,6 +48,10 @@ def config_health_view(request):
             "openai_vision_model": settings.OPENAI_VISION_MODEL,
             "grsai_configured": bool(settings.GRSAI_API_KEY),
             "grsai_base_url": settings.GRSAI_BASE_URL,
+            "cos_storage_enabled": bool(getattr(settings, "COS_USE_STORAGE", False)),
+            "cos_bucket": getattr(settings, "COS_BUCKET", "") or None,
+            "cos_region": getattr(settings, "COS_REGION", "") or None,
+            "media_url_prefix": (getattr(settings, "MEDIA_URL", "") or "")[:80] or None,
         }
     )
 

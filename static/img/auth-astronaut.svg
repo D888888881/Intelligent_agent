@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" fill="none" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="g-mag" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#f472b6"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
+  <!-- HUD ring -->
+  <circle cx="248" cy="92" r="52" stroke="url(#g-cyan)" stroke-width="1.2" stroke-dasharray="6 10" opacity="0.65"/>
+  <circle cx="248" cy="92" r="38" stroke="url(#g-mag)" stroke-width="0.8" opacity="0.45"/>
+  <!-- Tether -->
+  <path d="M88 128 Q120 100 168 88" stroke="#22d3ee" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 6"/>
+  <!-- Backpack -->
+  <rect x="72" y="108" width="44" height="56" rx="8" stroke="url(#g-cyan)" stroke-width="2"/>
+  <path d="M78 116h32M78 124h28M78 132h24" stroke="#34d399" stroke-width="1" opacity="0.6"/>
+  <!-- Body -->
+  <ellipse cx="130" cy="138" rx="36" ry="44" stroke="url(#g-cyan)" stroke-width="2"/>
+  <path d="M110 120h40M118 158h24" stroke="#22d3ee" stroke-width="1.2" opacity="0.55"/>
+  <!-- Helmet -->
+  <circle cx="178" cy="118" r="34" stroke="url(#g-cyan)" stroke-width="2.2"/>
+  <ellipse cx="188" cy="112" rx="14" ry="10" stroke="#67e8f9" stroke-width="1.5" opacity="0.85"/>
+  <path d="M162 128c8 6 20 6 28 0" stroke="#a78bfa" stroke-width="1.2" opacity="0.7"/>
+  <!-- Arm -->
+  <path d="M152 152 L108 172 L96 198" stroke="url(#g-cyan)" stroke-width="2"/>
+  <circle cx="94" cy="200" r="6" stroke="#34d399" stroke-width="1.5"/>
+  <!-- Leg -->
+  <path d="M142 178 L128 210 L118 228" stroke="url(#g-cyan)" stroke-width="2"/>
+  <path d="M158 178 L178 208 L192 224" stroke="url(#g-mag)" stroke-width="2"/>
+  <!-- Thruster -->
+  <path d="M72 148 L48 158 L32 168" stroke="#f472b6" stroke-width="1.8" opacity="0.8"/>
+  <ellipse cx="28" cy="172" rx="14" ry="8" stroke="url(#g-mag)" stroke-width="1.5" opacity="0.9"/>
+  </g>
+</svg>

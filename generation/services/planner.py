@@ -7,10 +7,13 @@ from django.conf import settings
 
 
 from generation.services.ecommerce_strategy import (
+    AMAZON_LISTING_7_FRAME_MATRIX,
     TK_MX_NINE_FRAME_MATRIX,
     build_marketing_strategy,
     strategy_brief_by_index,
 )
+from generation.services.listing_bundle import LISTING_PLAN_TEMPLATES
+from generation.services.image_text_policy import merge_image_text_negative
 from generation.services.intent import detect_plan_template
 
 
@@ -35,7 +38,8 @@ TK_MX_NEGATIVE = (
 
     "same camera angle as reference, watermark, blurry text, misspelled Spanish, "
 
-    "English text, Chinese text, distorted logo, low resolution, amateur lighting, "
+    "English text unless label-only, Chinese text, Chinese characters, hanzi, 中文, 汉字, "
+    "distorted logo, low resolution, amateur lighting, "
     "wrong product, different SKU, generic packaging, substitute bottle, altered label, "
     "wrong colorway, missing logo, fake brand, simplified design, different cap shape"
 
@@ -57,6 +61,10 @@ def build_plan(
 
     product_analysis: dict | None = None,
 
+    reference_attachment_count: int = 0,
+    marketing_strategy: dict | None = None,
+    listing_finalize_stage: str = "full",
+
 ) -> dict:
 
     """生成套图策划 JSON。"""
@@ -73,7 +81,7 @@ def build_plan(
 
     else:
 
-        template = detect_plan_template(user_prompt, image_count)
+        template = detect_plan_template(user_prompt, image_count, reference_attachment_count)
 
 
 
@@ -87,9 +95,21 @@ def build_plan(
         plan = _plan_photo_refine(user_prompt, product_identity, analysis)
         return _finalize_plan(plan, product_identity, analysis, template)
 
+    if template == "reference_guided":
+        from generation.services.reference_director import build_reference_guided_plan
+
+        plan = build_reference_guided_plan(
+            user_prompt,
+            image_count,
+            product_identity,
+            analysis,
+            reference_attachment_count=reference_attachment_count,
+        )
+        return _finalize_plan(plan, product_identity, analysis, template)
+
     if template == "tk_mx_ecommerce_9":
-        marketing_strategy = build_marketing_strategy(analysis, user_prompt)
-        plan = _plan_tk_mx_ecommerce_9(user_prompt, product_identity, analysis, marketing_strategy)
+        ms = marketing_strategy or build_marketing_strategy(analysis, user_prompt)
+        plan = _plan_tk_mx_ecommerce_9(user_prompt, product_identity, analysis, ms)
         from chat.services.openai_client import is_chat_configured
 
         if is_chat_configured():
@@ -100,13 +120,58 @@ def build_plan(
                 template_hint=template,
                 base_plan=plan,
                 product_analysis=analysis,
-                marketing_strategy=marketing_strategy,
+                marketing_strategy=ms,
             )
             if enriched:
-                return _finalize_plan(enriched, product_identity, analysis, template, marketing_strategy)
-        return _finalize_plan(plan, product_identity, analysis, template, marketing_strategy)
+                return _finalize_plan(
+                    enriched,
+                    product_identity,
+                    analysis,
+                    template,
+                    ms,
+                    listing_finalize_stage=listing_finalize_stage,
+                )
+        return _finalize_plan(
+            plan,
+            product_identity,
+            analysis,
+            template,
+            ms,
+            listing_finalize_stage=listing_finalize_stage,
+        )
 
+    if template == "amazon_listing_7":
+        ms = marketing_strategy or build_marketing_strategy(analysis, user_prompt)
+        plan = _plan_amazon_listing_7(user_prompt, product_identity, analysis, ms)
+        from chat.services.openai_client import is_chat_configured
 
+        if is_chat_configured():
+            enriched = _plan_with_openai(
+                user_prompt,
+                7,
+                product_identity,
+                template_hint=template,
+                base_plan=plan,
+                product_analysis=analysis,
+                marketing_strategy=ms,
+            )
+            if enriched:
+                return _finalize_plan(
+                    enriched,
+                    product_identity,
+                    analysis,
+                    template,
+                    ms,
+                    listing_finalize_stage=listing_finalize_stage,
+                )
+        return _finalize_plan(
+            plan,
+            product_identity,
+            analysis,
+            template,
+            ms,
+            listing_finalize_stage=listing_finalize_stage,
+        )
 
     from chat.services.openai_client import is_chat_configured
 
@@ -151,7 +216,10 @@ def _build_identity_lock(analysis: dict, product_identity: str) -> str:
     if analysis.get("identity_lock_en"):
         parts.append(str(analysis["identity_lock_en"]))
     if analysis.get("label_text_exact"):
-        parts.append(f"Label text (exact): {analysis['label_text_exact']}")
+        lbl = analysis["label_text_exact"]
+        if isinstance(lbl, (list, tuple)):
+            lbl = " | ".join(str(x) for x in lbl if x)
+        parts.append(f"Label text (exact): {lbl}")
     colors = analysis.get("primary_colors")
     if colors:
         if isinstance(colors, list):
@@ -189,8 +257,10 @@ def _product_identity_from_analysis(analysis: dict, reference_summary: str, user
         parts.append(str(analysis["raw_analysis"])[:800])
 
     if analysis.get("label_text_exact"):
-
-        parts.append(f"Label: {analysis['label_text_exact']}")
+        lbl = analysis["label_text_exact"]
+        if isinstance(lbl, (list, tuple)):
+            lbl = " | ".join(str(x) for x in lbl if x)
+        parts.append(f"Label: {lbl}")
 
     if analysis.get("primary_function"):
 
@@ -224,11 +294,17 @@ def _finalize_plan(
     analysis: dict,
     template: str | None,
     marketing_strategy: dict | None = None,
+    *,
+    listing_finalize_stage: str = "full",
 ) -> dict:
 
     plan.setdefault("quality_prefix", QUALITY_PREFIX)
 
-    plan.setdefault("negative_prompt", TK_MX_NEGATIVE if template == "tk_mx_ecommerce_9" else plan.get("negative_prompt"))
+    plan.setdefault(
+        "negative_prompt",
+        TK_MX_NEGATIVE if template in LISTING_PLAN_TEMPLATES else plan.get("negative_prompt"),
+    )
+    plan["negative_prompt"] = merge_image_text_negative(plan.get("negative_prompt"))
 
     plan["product_identity"] = product_identity
 
@@ -236,12 +312,15 @@ def _finalize_plan(
 
     plan["product_analysis"] = analysis
 
-    if template == "tk_mx_ecommerce_9":
+    if template in LISTING_PLAN_TEMPLATES:
         plan["default_reference_mode"] = "identity"
     else:
         plan.setdefault("default_reference_mode", "identity")
 
-    plan.setdefault("locale", "es-MX")
+    if template == "reference_guided":
+        plan.setdefault("locale", "user")
+    else:
+        plan.setdefault("locale", "es-MX")
 
     plan.setdefault("aspect_ratio", "1:1")
 
@@ -255,13 +334,39 @@ def _finalize_plan(
 
         shot.setdefault("reference_mode", plan.get("default_reference_mode", "identity"))
 
-    if template == "tk_mx_ecommerce_9":
+    if template in LISTING_PLAN_TEMPLATES:
         for shot in shots:
             shot["reference_mode"] = "identity"
 
     if marketing_strategy:
         plan["ecommerce_strategy"] = marketing_strategy
-    if not plan.get("planning_summary"):
+
+    if template == "reference_guided":
+        from generation.services.reference_director import format_reference_guided_preview_markdown
+
+        plan["planning_summary"] = format_reference_guided_preview_markdown(plan)
+    elif template in LISTING_PLAN_TEMPLATES:
+        from generation.services.tk_mx_listing import apply_tk_mx_listing_plan, format_step1_preview_markdown
+
+        plan = apply_tk_mx_listing_plan(plan)
+        plan.setdefault("visual_batch_index", 0)
+        stage = (listing_finalize_stage or "full").strip().lower()
+        if stage != "identity":
+            from generation.services.frame3_flex import apply_frame3_flex_variant
+            from generation.services.frame4_flex import apply_frame4_flex_variant
+            from generation.services.frame5_flex import apply_frame5_flex_variant
+            from generation.services.frame9_conversion import apply_frame9_conversion_variant
+            from generation.services.camera_diversity import apply_camera_diversity
+            from generation.services.listing_usp_distribution import apply_listing_usp_distribution
+
+            plan = apply_frame3_flex_variant(plan)
+            plan = apply_frame4_flex_variant(plan)
+            plan = apply_frame5_flex_variant(plan)
+            plan = apply_frame9_conversion_variant(plan)
+            plan = apply_camera_diversity(plan, merge=True)
+            plan = apply_listing_usp_distribution(plan)
+        plan["planning_summary"] = format_step1_preview_markdown(plan)
+    elif not plan.get("planning_summary"):
         plan["planning_summary"] = _planning_summary_text(shots, analysis, marketing_strategy)
 
     return plan
@@ -442,6 +547,13 @@ def _plan_tk_mx_ecommerce_9(
                 "reference_mode": "identity",
                 "prompt_es": brief.get("key_message_es") or "",
                 "prompt_en": prompt_en,
+                "image_goal_zh": brief.get("image_goal_zh") or "",
+                "composition_zh": brief.get("composition_zh") or "",
+                "scene_zh": brief.get("scene_zh") or "",
+                "headline_es": brief.get("headline_es") or "",
+                "subhead_es": brief.get("subhead_es") or "",
+                "icon_bullets_es": brief.get("icon_bullets_es") or [],
+                "layout_subtype": brief.get("layout_subtype") or "",
             }
         )
 
@@ -454,6 +566,81 @@ def _plan_tk_mx_ecommerce_9(
         "aspect_ratio": "1:1",
         "image_count": 9,
         "locale": "es-MX",
+        "default_reference_mode": "identity",
+        "shots": shots,
+    }
+
+
+def _plan_amazon_listing_7(
+    user_prompt: str,
+    product_identity: str,
+    analysis: dict,
+    marketing_strategy: dict,
+) -> dict:
+    """Amazon 7 图：压缩九职能矩阵（无独立种草/套装镜）。"""
+    from generation.services.listing_bundle import strategy_brief_index_for_shot
+
+    subject = user_prompt[:800]
+    briefs = strategy_brief_by_index(marketing_strategy or {})
+    shots = []
+
+    for frame in AMAZON_LISTING_7_FRAME_MATRIX:
+        idx = frame["index"]
+        brief = briefs.get(strategy_brief_index_for_shot({"plan_template": "amazon_listing_7"}, idx), frame)
+        creative = (brief.get("creative_direction_en") or "").strip()
+        if not creative:
+            creative = (
+                f"Unique {frame['visual_archetype']} for {frame['marketing_pillar']}: "
+                f"{brief.get('consumer_question', frame['consumer_question'])}"
+            )
+        sibling = 6
+        prompt_en = (
+            f"{creative} "
+            f"Marketing pillar: {brief.get('marketing_pillar', frame['marketing_pillar'])}. "
+            f"Visual archetype: {brief.get('visual_archetype', frame['visual_archetype'])}. "
+            f"Scene family: {brief.get('scene_family', frame['scene_family'])}. "
+            "Do NOT create a simple packshot with minor rotation — tell a different story beat. "
+            f"Explicitly rotate product to a unique camera angle vs the other {sibling} frames (not the same front-facing pose). "
+            f"User brief: {subject}. "
+            f"Diversity lock: {brief.get('diversity_lock', 'Must differ from the other listing frames')}. "
+            "Same product SKU as reference; new scene narrative only."
+        )
+        compare = _comparison_snippet_for_shot(brief.get("role", frame["role"]), analysis)
+        if compare:
+            prompt_en += f" Comparison context: {compare}"
+        shots.append(
+            {
+                "index": idx,
+                "role": brief.get("role", frame["role"]),
+                "frame_contract": brief.get("frame_contract", frame.get("frame_contract", "")),
+                "marketing_pillar": brief.get("marketing_pillar", frame["marketing_pillar"]),
+                "consumer_question": brief.get("consumer_question", frame["consumer_question"]),
+                "visual_archetype": brief.get("visual_archetype", frame["visual_archetype"]),
+                "scene_family": brief.get("scene_family", frame["scene_family"]),
+                "diversity_lock": brief.get("diversity_lock", ""),
+                "reference_mode": "identity",
+                "prompt_es": brief.get("key_message_es") or "",
+                "prompt_en": prompt_en,
+                "image_goal_zh": brief.get("image_goal_zh") or "",
+                "composition_zh": brief.get("composition_zh") or "",
+                "scene_zh": brief.get("scene_zh") or "",
+                "headline_es": brief.get("headline_es") or "",
+                "subhead_es": brief.get("subhead_es") or "",
+                "icon_bullets_es": brief.get("icon_bullets_es") or [],
+                "layout_subtype": brief.get("layout_subtype") or "",
+            }
+        )
+
+    amazon_style = QUALITY_PREFIX.replace("TikTok Shop listing ready", "Amazon product listing ready")
+    return {
+        "plan_template": "amazon_listing_7",
+        "style_lock": amazon_style,
+        "subject_lock": subject,
+        "negative_prompt": TK_MX_NEGATIVE
+        + ", repetitive packshot, same composition as other listing images, minor angle tweak only",
+        "aspect_ratio": "1:1",
+        "image_count": 7,
+        "locale": "en-US",
         "default_reference_mode": "identity",
         "shots": shots,
     }
@@ -491,27 +678,27 @@ def _plan_with_openai(
         extra = """
 模板 tk_mx_ecommerce_9：9 张图 = 9 种「营销职能」，不是 9 次微调角度。
 
-【固定四张 — 职能不可改，仅可丰富 prompt】
-index 1 hero_hook 主图；index 2 white_bg_catalog 白底；index 4 usp_primary 单张使用前后对比；
-index 5 usp_secondary 本品 vs 同品类 generic 无商标替代品并排。
+【固定两张 — 职能不可改，仅可丰富 prompt】
+index 1 hero_hook 主图；index 2 white_bg_catalog 白底；index 4 usp_primary 固定使用前→使用后痛点对比（纯视觉，禁止对比文字）；
+index 5 usp_secondary 批次轮换（品类对比 / 规格属性 / 套装清单 / 使用步骤 / 核心功能），非固定单一对比图。
 【创意五张详情 — index 3,6,7,8,9】
 pain_empathy / trust_quality / ease_objection / value_stack / lifestyle_payoff：
 卖点、人物动作、机位、信息密度必须互斥；该多元素时可丰富（套装平铺），该简洁时微距/留白（trust）；
-美妆护肤：禁止多帧重复「涂面膜/贴痘贴」同一动作；3=问题态无涂抹，6=材质/成分微距，7=唯一步骤演示，8=套装/价值故事，9=用后生活不含重复涂抹。
+美妆护肤：禁止多帧重复「涂面膜/贴痘贴」同一动作；3=轮换卖点解决或产品细节特写，6=真实生活场景信任图，7=人群种草，8=套装/价值，9=用后愿景；3/6/7/9 动作互斥。
 
 【人物频率 — 必须动态控制，禁止每套都 5 张出人】
 全组 9 张最多 2–3 张出现人（含手部）；全脸/半身最多 1–2 张；主图 index 1 优先产品主体无模特。
-index 2/5/6 必须无人物；index 4 前后对比优先光影/产品/局部皮肤，避免大正脸；index 3/9 优先环境叙事，可完全无脸。
-禁止 3+ 张 bathroom mirror、3+ 张 top-down flat lay、重复 cheek 涂抹动作。
+index 2/5 必须无人物；index 6 环境+产品为主，可无脸或仅手/背影；index 4 前后对比优先光影/产品/局部皮肤，避免大正脸；index 7 为核心人群镜，优先半身/3/4 真人使用；index 3/9 优先环境叙事，可完全无脸。
+禁止 3+ 张 bathroom mirror、3+ 张 top-down flat lay、frame 7 与 frame 9 重复同一上脸动作。
 
 【材质与故事 — 必须可见】
-index 6 必须写清膏体/泥/贴材质感、成分或工艺信任点（来自 product_analysis）；index 3/8/9 各讲不同故事 beat，少排版多叙事。
+index 6 必须写清真实生活场景（浴室/卧室/厨房/街拍/办公室等）+ 产品如何自然融入并体现品质/材质信任（来自 product_analysis）；index 3/8/9 各讲不同故事 beat，少排版多叙事。
 
 你是电商主图分析大师：先理解购买动机、痛点、卖点、顾虑、信任、性价比、愿景，再写镜头。
 规则（违反则不合格）：
 1) 每张必须保留 marketing_pillar, consumer_question, visual_archetype, scene_family（与 base_plan 一致或更具体）。
-2) prompt_en ≥ 100 词：写「视觉叙事 + 场景家族 + 道具/信息图」；每帧必须写清 distinct camera angle / product facing，禁止 9 张都是正面同角度或同一涂抹动作。
-3) index 4 用 product_analysis before/after，禁止拼贴；index 5 用 same_category_comparison；index 8 避免与旧批相同的俯拍网格；index 6 微距材质/成分。
+2) prompt_en ≥ 100 词：视觉叙事 + 场景 + 西语卖点文案（每镜互不重复的主信息，短句突出重点，禁止九张都无字纯视觉）；每帧 distinct camera angle。
+3) index 4 固定 before/after 纯视觉，禁止对比字样与普品对比拼贴；index 5 按 variant 可含品类对比；index 8 避免与旧批相同的俯拍网格；index 6 真实生活场景信任，非临床白底微距；九张产品朝向/机位必须互不相同。
 4) prompt_es：西语墨西哥短句；white_bg 可为空。
 5) reference_mode 全部为 identity；SKU 一致但构图叙事必须不同。
 6) diversity_lock 必须写清与另外 8 张在动作/密度/机位上的差异。

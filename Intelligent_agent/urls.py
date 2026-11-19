@@ -30,6 +30,7 @@ urlpatterns = [
     path("api/generations/", include("generation.urls")),
 ]
 
+# 开发环境继续提供 /media/，兼容 COS 开启前存在本地的历史文件
 if settings.DEBUG:
     urlpatterns += [
         re_path(r"^media/(?P<path>.*)$", cached_media_serve),

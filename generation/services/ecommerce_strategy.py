@@ -28,46 +28,46 @@ TK_MX_NINE_FRAME_MATRIX = [
         "index": 3,
         "role": "pain_empathy",
         "frame_contract": "creative_detail",
-        "marketing_pillar": "痛点共鸣",
-        "consumer_question": "使用前的困扰/问题状态是什么？（before 侧素材）",
-        "visual_archetype": "before_use_problem_state",
-        "scene_family": "relatable_home",
+        "marketing_pillar": "卖点呈现",
+        "consumer_question": "解决了什么痛点？细节是否靠谱？（批次轮换两种画面）",
+        "visual_archetype": "frame3_flex_rotation",
+        "scene_family": "benefit_or_detail_macro",
     },
     {
         "index": 4,
         "role": "usp_primary",
-        "frame_contract": "fixed",
-        "marketing_pillar": "核心卖点",
-        "consumer_question": "使用前后对比：改善有多明显？",
-        "visual_archetype": "before_after_transformation",
-        "scene_family": "comparison_studio_single_frame",
+        "frame_contract": "flex_variant",
+        "marketing_pillar": "痛点对比",
+        "consumer_question": "用了以后改善有多明显？（纯视觉，无对比文字）",
+        "visual_archetype": "pain_before_after_single_photo",
+        "scene_family": "transformation_visual_only",
     },
     {
         "index": 5,
         "role": "usp_secondary",
-        "frame_contract": "fixed",
-        "marketing_pillar": "次要卖点",
-        "consumer_question": "比同类型普通产品好在哪里？",
-        "visual_archetype": "same_category_product_comparison",
-        "scene_family": "side_by_side_vs_generic",
+        "frame_contract": "flex_variant",
+        "marketing_pillar": "对比/规格/功能",
+        "consumer_question": "对比、规格、步骤或核心功能中，本帧展示哪一类信息？",
+        "visual_archetype": "frame5_flex_rotation",
+        "scene_family": "specs_compare_or_steps",
     },
     {
         "index": 6,
         "role": "trust_quality",
         "frame_contract": "creative_detail",
         "marketing_pillar": "信任背书",
-        "consumer_question": "质量/成分/工艺是否可靠？",
-        "visual_archetype": "quality_proof_macro",
-        "scene_family": "clinical_detail",
+        "consumer_question": "在真实日常生活里，品质是否靠谱、值得信赖？",
+        "visual_archetype": "real_life_trust_context",
+        "scene_family": "mexico_daily_environment",
     },
     {
         "index": 7,
         "role": "ease_objection",
         "frame_contract": "creative_detail",
-        "marketing_pillar": "消除顾虑",
-        "consumer_question": "是否难用、耗时、不适合我？",
-        "visual_archetype": "simple_steps_in_use",
-        "scene_family": "hands_on_demo",
+        "marketing_pillar": "人群种草",
+        "consumer_question": "和我类似的人也在用吗？画面真实、适合我吗？",
+        "visual_archetype": "tiktok_social_proof_in_use",
+        "scene_family": "target_audience_lifestyle",
     },
     {
         "index": 8,
@@ -82,10 +82,77 @@ TK_MX_NINE_FRAME_MATRIX = [
         "index": 9,
         "role": "lifestyle_payoff",
         "frame_contract": "creative_detail",
-        "marketing_pillar": "成交愿景",
-        "consumer_question": "用完后的理想状态/身份认同",
-        "visual_archetype": "aspirational_outcome",
-        "scene_family": "lifestyle_mx_outdoor_or_vanity",
+        "marketing_pillar": "强转化收尾",
+        "consumer_question": "值得买吗？适合日常/送礼/家人吗？（购买氛围而非再一次纯产品特写）",
+        "visual_archetype": "frame9_conversion_rotation",
+        "scene_family": "purchase_atmosphere_close",
+    },
+]
+
+# Amazon 7 图（卖家叙事顺序，独立矩阵 — 非 TikTok 九图压缩）
+AMAZON_LISTING_7_FRAME_MATRIX = [
+    {
+        "index": 1,
+        "role": "white_bg_catalog",
+        "frame_contract": "fixed",
+        "marketing_pillar": "主图合规",
+        "consumer_question": "看清商品本体，符合 Amazon 主图规范",
+        "visual_archetype": "amazon_main_white_catalog",
+        "scene_family": "pure_white",
+    },
+    {
+        "index": 2,
+        "role": "hero_hook",
+        "frame_contract": "fixed",
+        "marketing_pillar": "核心卖点",
+        "consumer_question": "为什么值得买？核心购买价值是什么？",
+        "visual_archetype": "amazon_core_value_hero",
+        "scene_family": "studio_value_hero",
+    },
+    {
+        "index": 3,
+        "role": "usp_secondary",
+        "frame_contract": "flex_variant",
+        "marketing_pillar": "规格参数",
+        "consumer_question": "尺寸、容量、颜色等规格疑问能否一眼看懂？",
+        "visual_archetype": "specs_callout_single_photo",
+        "scene_family": "infographic_product_hero",
+    },
+    {
+        "index": 4,
+        "role": "usp_primary",
+        "frame_contract": "flex_variant",
+        "marketing_pillar": "对比或场景",
+        "consumer_question": "痛点前后变化明显吗？或真实使用场景能否代入？（批次轮换）",
+        "visual_archetype": "amazon_frame4_dual_rotation",
+        "scene_family": "transformation_or_real_life_scene",
+    },
+    {
+        "index": 5,
+        "role": "pain_empathy",
+        "frame_contract": "creative_detail",
+        "marketing_pillar": "细节品质",
+        "consumer_question": "材质做工、细节特写或成分是否可信？",
+        "visual_archetype": "frame3_flex_rotation",
+        "scene_family": "benefit_or_detail_macro",
+    },
+    {
+        "index": 6,
+        "role": "ease_objection",
+        "frame_contract": "creative_detail",
+        "marketing_pillar": "功能演示",
+        "consumer_question": "功能/效果如何被直观证明？",
+        "visual_archetype": "feature_demonstration_in_use",
+        "scene_family": "proof_of_function",
+    },
+    {
+        "index": 7,
+        "role": "value_stack",
+        "frame_contract": "creative_detail",
+        "marketing_pillar": "包装配件",
+        "consumer_question": "盒内有什么、买到什么？",
+        "visual_archetype": "whats_in_the_box",
+        "scene_family": "kit_layout_angled",
     },
 ]
 
@@ -104,22 +171,28 @@ def build_marketing_strategy(product_analysis: dict, user_prompt: str) -> dict:
 
     matrix_json = json.dumps(TK_MX_NINE_FRAME_MATRIX, ensure_ascii=False)
     system = (
-        "你是 TikTok Shop 墨西哥站「电商主图分析大师」：先解剖商品再策划视觉。"
-        "输出单个 JSON，无 markdown。"
+        "你是 TikTok Shop 墨西哥站「电商主图分析大师」：全套 9 张均为 Listing 主图（1 场景分层主图 + 1 白底 + 7 职能详情），"
+        "先解剖商品再策划视觉。输出单个 JSON，无 markdown。"
         "顶层字段：product_summary_zh, target_buyer_zh, purchase_motivations[], pain_points[], "
         "core_usps[], objections[], trust_signals[], mexico_angle_zh, conversion_story_zh。"
-        "shot_briefs：长度必须 9，与 matrix 的 index/role 一一对应；每项含 "
-        "index, role, marketing_pillar, consumer_question, visual_archetype, scene_family, "
-        "key_message_es（西语 3-8 词）, creative_direction_en（80+ 词，描述独特画面，禁止与其他帧同类）, "
-        "diversity_lock（说明本帧与另外 8 帧在视觉叙事与机位上的差异）。"
+        "shot_briefs：长度必须 9，与 matrix 的 index/role 一一对应；每项除 matrix 字段外还必须含："
+        "image_goal_zh, composition_zh, scene_zh, headline_es（index1 必填主标题，8 词内）, subhead_es（index1 副标题可空）, "
+        "icon_bullets_es（index1 为长度3的数组，每项2-3西语单词；其他镜可[]）, "
+        "key_message_es（西语 3-8 词）, creative_direction_en（80+ 词，独特画面）, diversity_lock, "
+        "layout_subtype（index 5 可选 category_compare|specs_features|kit_contents|usage_steps|core_functions；"
+        "index 8 用 specs_features 或 value_bundle；index 9 用 benefit_summary 或 conversion_close）。"
+        "index 1 hero_hook：强视觉冲击 scroll-stopper（高对比/景深/光束/色块场景），产品约40-52%，西语标题+icon 辅佐画面；非白底、非平淡 packshot。"
+        "index 2 white_bg_catalog：纯白合规 catalog，禁止任何营销文案/贴纸/icon，仅产品+包装原有印刷。"
         "creative_direction_en 必须包含明确的 product facing / camera angle（互不相同）。"
-        "必须消费 product_analysis 中的 before_use_state、after_use_state、before_after_visual_en、same_category_comparison、"
-        "key_ingredients/key_selling_points/visual_identity："
-        "index 3 聚焦使用前问题态（可环境静物，不必正脸）；index 4 为单张图的使用前后对比（非多宫格，优先无大正脸）；"
-        "index 5 为本品 vs 同品类无品牌/generic 替代品并排对比（禁止真实竞品商标）；"
-        "index 6 必须描述可拍摄的材质/成分/工艺微观证据；index 8 套装/value 故事，避免与 index 2 雷同白底正面。"
-        "人物：全组最多 2–3 帧出现人（含手），禁止每套 5 张都出人；index 2/5/6 无人。"
-        "要求：9 帧不得都是正面同视角或同一 bathroom flatlay；必须覆盖动机/痛点/前后对比/品类对比/信任/顾虑/套装/愿景等任务。"
+        "必须消费 product_analysis 的 before/after、same_category_comparison、key_selling_points、visual_identity。"
+        "index 3 批次轮换：卖点解决对比（舒适/收纳/省空间/顺滑/耐用/显瘦/方便等，纯视觉）或产品细节特写（材质/纹理/做工/接口/标签/包装局部）；"
+        "4 痛点对比（批次轮换：单图使用前/使用后 或 普通品/本品，纯视觉禁 antes/después/使用前/使用后 等字）；"
+        "5 由系统按批次轮换：品类对比 / 规格属性 / 套装清单 / 使用步骤 / 核心功能（layout_subtype 五选一作参考，实际以批次为准）；"
+        "6 真实生活场景信任图（墨西哥家庭/浴室/卧室/厨房/街拍/办公室等，产品自然置景或轻度使用态，真实光线，非临床白底微距）；"
+        "7 目标人群场景种草（真人正在使用、自然真实、TikTok UGC 感，半身或 3/4，非纯手部步骤）；8 规格或套装；9 卖点总结或强转化收尾。"
+        "人物：全组最多 2–3 帧出现人（含手）；index 2/5 无人；index 6 优先环境+产品，可无脸或仅手/背影；"
+        "index 1 默认产品为主少露脸；index 7 为核心人群镜，优先露目标消费者。"
+        "合规：禁止医疗夸大、绝对化承诺；西语墨西哥本地化短句；成图禁止中文（勿在 headline_es/icon 写中文，包装标签除外）。"
     )
     user = "\n".join(
         [
@@ -165,12 +238,25 @@ def _strategy_fallback(product_analysis: dict, user_prompt: str) -> dict:
         idx = frame["index"]
         role = frame["role"]
         creative = _fallback_creative_en(role, user_prompt, usps, pains, product_analysis)
+        layout_subtype = ""
+        if idx == 8:
+            layout_subtype = "specs_features"
+        elif idx == 9:
+            layout_subtype = "conversion_close"
+        headline = h(idx - 1) if role != "white_bg_catalog" else ""
         briefs.append(
             {
                 **frame,
-                "key_message_es": h(idx - 1) if role != "white_bg_catalog" else "",
+                "image_goal_zh": frame.get("consumer_question", "")[:80],
+                "composition_zh": "单图1:1，产品主体清晰",
+                "scene_zh": "墨西哥电商主图场景",
+                "headline_es": headline if idx == 1 else "",
+                "subhead_es": (usps[0] if usps else "")[:40] if idx == 1 else "",
+                "icon_bullets_es": [str(u)[:20] for u in usps[:3]] if idx == 1 and usps else [],
+                "key_message_es": headline if role != "white_bg_catalog" else "",
                 "creative_direction_en": creative,
                 "diversity_lock": f"Unique marketing frame '{role}' — not a minor angle change of other shots.",
+                "layout_subtype": layout_subtype,
             }
         )
 
@@ -200,7 +286,10 @@ def _fallback_before_after(analysis: dict, usp_fallback: str) -> str:
         f"while hero product {usp_fallback} is prominent; use lighting/color/contrast or split visual weight, "
         f"NOT a multi-panel collage grid."
     )
-    return f"Before/after transformation in ONE frame: {extra}"
+    return (
+        f"Before/after transformation in ONE frame: {extra} "
+        "Do NOT render before/after or 使用前/使用后 text on the image — visual contrast only."
+    )
 
 
 def _fallback_category_compare(analysis: dict, usp_fallback: str) -> str:
@@ -237,24 +326,35 @@ def _fallback_creative_en(role: str, user_prompt: str, usps: list, pains: list, 
             "Pure #FFFFFF seamless catalog shot, front-facing product only, even softbox, "
             "full margins for TikTok Shop compliance."
         ),
-        "pain_empathy": _fallback_before_scene(analysis, pain1),
+        "pain_empathy": (
+            "Listing frame 3 (batch variant): EITHER benefit-solve visual — comfort, storage, space-saving, "
+            "smooth, durable, slimming, convenience — OR product detail macro on material, texture, craft, "
+            "label, packaging; no portrait; differs from frames 4 and 6."
+        ),
         "usp_primary": _fallback_before_after(analysis, usp1),
         "usp_secondary": _fallback_category_compare(analysis, usp2),
         "trust_quality": (
-            "Macro trust shot: visible paste/stick/cream texture, smear or cross-section, "
-            "ingredient or certification callout from label, clinical sharpness, cool neutral background, NO face."
+            "Real-life trust scene in Mexico: product believably placed or lightly in-use in a natural "
+            "daily environment — home living room, bathroom vanity, bedroom nightstand, kitchen counter, "
+            "street café table, or modern office desk; warm/natural light, lived-in details, commercial "
+            "clarity on SKU; communicates quality through authentic context, NOT sterile clinical macro "
+            "on pure white; avoid full-face portrait (save for frame 7); must differ from frame 3 problem still."
         ),
         "ease_objection": (
-            "Hands-only demo: ONE simple step, cropped above wrists, product in hand, "
-            "communicates 'easy and fast'; not the same gesture as other frames."
+            "TikTok-style crowd/social-proof scene: target consumer actively using the product in a "
+            "believable Mexico daily-life setting — natural light, candid mid-action, relatable "
+            "half-body or 3/4 portrait, product clearly visible in use; organic creator seeding vibe, "
+            "NOT stiff catalog pose, NOT hands-only macro tutorial; gesture must differ from frames 3 and 9."
         ),
         "value_stack": (
             "Value story: kit contents from package_includes on shelf or angled layout (avoid duplicate top-down grid), "
             "value-for-money narrative, warm surface."
         ),
         "lifestyle_payoff": (
-            f"Aspirational AFTER-use payoff WITHOUT portrait: {(analysis.get('after_use_state') or fn)[:200]}. "
-            f"Product in Mexico lifestyle context (window, café, outdoor), no applying gesture."
+            "Conversion CLOSE frame 9: purchase atmosphere (daily essential / gift / family must-have / "
+            "worth buying / benefit summary / lifestyle aspiration) — scene and props lead; product supports. "
+            f"After-use mood when relevant: {(analysis.get('after_use_state') or fn)[:120]}. "
+            "NOT lone packshot repeat of hero."
         ),
     }
     return templates.get(role, f"Unique e-commerce visual for {role}. {fn}")

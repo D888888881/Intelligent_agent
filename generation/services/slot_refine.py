@@ -10,13 +10,14 @@ from generation.models import GeneratedImage, GenerationJob, SlotRefineCandidate
 from generation.services.grsai import GrsaiError, attachment_to_image_payload, storage_file_to_image_payload
 from generation.services.image_gen import generate_image_file
 from generation.services.model_strategy import model_family
+from generation.services.image_text_policy import on_image_text_mandate_for_plan
 from generation.services.prompt_builder import is_reference_refusal_error, is_violation_error
 
 SLOT_REFINE_AVOID = (
     "collage, grid layout, split screen, multiple panels, watermark, wrong SKU, "
     "redesigned packaging, altered label, wrong bottle color, duplicate reference packshot, "
     "full scene replacement, unrelated new background, new camera angle, relayout of headline or CTA, "
-    "English or Chinese text unless already in frame, blurry text, low resolution, "
+    "Chinese text, Chinese characters, hanzi, added 中文 captions, blurry text, low resolution, "
     "unchanged copy of reference image 2, identical output when edit requests resize, "
     "unchanged wrong product or prop in scene, generic substitute instead of reference SKU"
 )
@@ -205,6 +206,7 @@ def build_slot_refine_prompt(
     image_model: str | None = None,
     mode: str = "standard",
     ref_layout: str = "sku_first",
+    reference_mode: str = "dual",
 ) -> str:
     user = (user_prompt or "").strip()
     plan = job.plan_json or {}
@@ -212,6 +214,33 @@ def build_slot_refine_prompt(
     role = (shot.get("marketing_pillar") or shot.get("role") or "").strip()
     locale = plan.get("locale") or ""
     family = model_family(image_model)
+
+    if reference_mode == "upload_only":
+        parts: list[str] = []
+        if family == "gpt_image":
+            parts.append(
+                "The images array contains ONE user-uploaded reference only. "
+                "Generate a new listing photograph — do not ask for more images."
+            )
+        parts.append(
+            f"New listing frame #{slot_index} from user reference + prompt (not in-place retouch of a prior frame)."
+        )
+        parts.append(on_image_text_mandate_for_plan(plan))
+        parts.append(
+            f"User creative direction (apply visually; do NOT print as on-image text): {user}"
+        )
+        parts.append(
+            "Follow the attached reference for composition, subject, lighting, and style as appropriate to the prompt. "
+            "You may reinterpret the scene; do not assume any product packshot or prior listing frame beyond this attachment."
+        )
+        parts.append(
+            "Output: one photorealistic full-frame photo. No collage. No instructional text in the image."
+        )
+        if locale:
+            parts.append(f"If marketing copy appears, use locale {locale} short callouts only when the prompt asks.")
+        parts.append(f"Avoid: {SLOT_REFINE_AVOID}")
+        return " ".join(parts)
+
     scale_edit = _is_scale_edit_request(user)
     consistency_edit = _is_product_consistency_edit(user) and not scale_edit
 
@@ -239,7 +268,10 @@ def build_slot_refine_prompt(
         )
 
     parts.append(head)
-    parts.append(f"Primary edit (must be visible in output; Chinese or English): {user}")
+    parts.append(on_image_text_mandate_for_plan(plan))
+    parts.append(
+        f"Primary edit request (apply visually; do NOT print this instruction as on-image text): {user}"
+    )
 
     consistency_directive = _product_consistency_directive(user, ref_layout=ref_layout)
     scale_directive = (
@@ -324,7 +356,18 @@ def _aspect_for_job(job: GenerationJob) -> str:
     return (job.plan_json or {}).get("aspect_ratio") or "1:1"
 
 
-def _slot_refine_reference_images(job: GenerationJob, gen_img: GeneratedImage) -> list[str]:
+def _slot_refine_reference_images(
+    job: GenerationJob,
+    gen_img: GeneratedImage,
+    *,
+    candidate: SlotRefineCandidate | None = None,
+) -> list[str]:
+    if candidate and (candidate.reference_mode or "") == "upload_only":
+        att = candidate.reference_attachment
+        if not att or not att.file:
+            raise GrsaiError("缺少新上传参考图")
+        return [attachment_to_image_payload(att)]
+
     from generation.services.job_references import job_attachments
 
     attachments = job_attachments(job)
@@ -348,14 +391,18 @@ def _generate_slot_refine_file(
     image_model: str,
     aspect: str,
     gen_img: GeneratedImage,
+    candidate: SlotRefineCandidate | None = None,
 ) -> ContentFile:
-    refs = _slot_refine_reference_images(job, gen_img)
+    ref_mode = (candidate.reference_mode if candidate else "dual") or "dual"
+    refs = _slot_refine_reference_images(job, gen_img, candidate=candidate)
+    ref_purpose = "slot_refine_upload" if ref_mode == "upload_only" else "slot_refine"
     prompt_body = build_slot_refine_prompt(
         user_prompt=user_prompt,
         job=job,
         slot_index=slot_index,
         image_model=image_model,
         mode="standard",
+        reference_mode=ref_mode,
     )
 
     def _call(body: str) -> ContentFile:
@@ -366,7 +413,7 @@ def _generate_slot_refine_file(
             reference_images=refs,
             aspect_ratio=aspect,
             image_model=image_model,
-            reference_purpose="slot_refine",
+            reference_purpose=ref_purpose,
         )
 
     try:
@@ -379,6 +426,7 @@ def _generate_slot_refine_file(
                 slot_index=slot_index,
                 image_model=image_model,
                 mode="forced_attach",
+                reference_mode=ref_mode,
             )
             return _call(forced)
         if is_violation_error(exc):
@@ -388,6 +436,7 @@ def _generate_slot_refine_file(
                 slot_index=slot_index,
                 image_model=image_model,
                 mode="moderation_safe",
+                reference_mode=ref_mode,
             )
             return _call(safe)
         if isinstance(exc, GrsaiError):
@@ -400,6 +449,7 @@ def run_slot_refine_candidate(candidate_id: int) -> None:
         SlotRefineCandidate.objects.select_related(
             "job",
             "job__reference_attachment",
+            "reference_attachment",
             "user",
         )
         .filter(pk=candidate_id)
@@ -420,11 +470,21 @@ def run_slot_refine_candidate(candidate_id: int) -> None:
         candidate.save(update_fields=["status", "error_message"])
         return
 
-    if not job.reference_attachment:
-        candidate.status = SlotRefineCandidate.Status.FAILED
-        candidate.error_message = "任务缺少商品原图参考，无法修复"
-        candidate.save(update_fields=["status", "error_message"])
-        return
+    ref_mode = (candidate.reference_mode or "dual").strip()
+    if ref_mode == "upload_only":
+        if not candidate.reference_attachment or not candidate.reference_attachment.file:
+            candidate.status = SlotRefineCandidate.Status.FAILED
+            candidate.error_message = "缺少新上传参考图"
+            candidate.save(update_fields=["status", "error_message"])
+            return
+    elif not job.reference_attachment:
+        from generation.services.job_references import job_attachment_ids
+
+        if not job_attachment_ids(job):
+            candidate.status = SlotRefineCandidate.Status.FAILED
+            candidate.error_message = "任务缺少商品原图参考，无法修复"
+            candidate.save(update_fields=["status", "error_message"])
+            return
 
     candidate.status = SlotRefineCandidate.Status.RUNNING
     candidate.error_message = ""
@@ -440,6 +500,7 @@ def run_slot_refine_candidate(candidate_id: int) -> None:
             image_model=image_model,
             aspect=aspect,
             gen_img=gen_img,
+            candidate=candidate,
         )
         candidate.file.save(
             f"job{job.id}_slot{slot_index}_c{candidate.id}.png",

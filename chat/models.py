@@ -20,6 +20,7 @@ class Conversation(models.Model):
     )
     shared_by_label = models.CharField(max_length=64, blank=True, default="")
     shared_at = models.DateTimeField(null=True, blank=True)
+    marketplace_id = models.CharField(max_length=32, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

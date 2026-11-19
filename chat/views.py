@@ -91,6 +91,18 @@ class ConversationDetailView(APIView):
             else:
                 conv.pinned_at = None
             update_fields.append("pinned_at")
+        if "marketplace_id" in request.data:
+            from generation.services.marketplace_profiles import MARKETPLACE_PROFILES, normalize_marketplace_id
+
+            raw = request.data.get("marketplace_id")
+            if raw is None or raw == "":
+                conv.marketplace_id = ""
+            else:
+                mid = normalize_marketplace_id(str(raw).strip())
+                if str(raw).strip() not in MARKETPLACE_PROFILES:
+                    return Response({"detail": "不支持的投放站点"}, status=status.HTTP_400_BAD_REQUEST)
+                conv.marketplace_id = mid
+            update_fields.append("marketplace_id")
         if update_fields:
             update_fields.append("updated_at")
             conv.save(update_fields=update_fields)

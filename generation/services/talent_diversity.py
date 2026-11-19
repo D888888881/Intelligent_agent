@@ -11,9 +11,10 @@ HUMAN_FULL_BODY_ROLES = frozenset(
         "lifestyle_payoff",
         "usp_primary",
         "hero_hook",
+        "ease_objection",
     }
 )
-HUMAN_HANDS_ROLES = frozenset({"ease_objection"})
+HUMAN_HANDS_ROLES = frozenset()
 
 # 每组 9 个互异 profile；整组轮换以区分「上一套图 vs 下一套图」
 TALENT_ROTATION_GROUPS: list[list[dict]] = [

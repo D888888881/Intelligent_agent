@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from Intelligent_agent.media_urls import resolve_media_file_url
+
 from .models import Attachment
 
 
@@ -19,7 +21,4 @@ class AttachmentSerializer(serializers.ModelSerializer):
         )
 
     def get_url(self, obj):
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        return resolve_media_file_url(obj.file, self.context.get("request"))

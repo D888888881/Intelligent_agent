@@ -5,6 +5,9 @@ const MESSAGE_INITIAL_SIZE = Number(IA_CHAT.initialMessageLimit) || 10;
 const MESSAGE_OLDER_PAGE_SIZE = Number(IA_CHAT.olderMessagePageSize) || 10;
 const MAX_REF_IMAGES = Number(IA_CHAT.maxReferenceImages) || 8;
 const GEN_POLL_INTERVAL_MS = 1500;
+/** 终态后单镜仍无 URL（落盘/对齐滞后）时独立拉图，不依赖 genWatchers */
+const GALLERY_SYNC_INTERVAL_MS = 2000;
+const GALLERY_SYNC_MAX_TICKS = 180;
 const LAST_CONV_STORAGE_PREFIX = "ia_last_conversation_id_";
 
 let state = {
@@ -18,14 +21,42 @@ let state = {
   attachments: [],
   activeGenEs: null,
   genWatchers: {},
+  planPreviewNotified: {},
+  /** 策划预览仅自动锚定滚动一次，避免用户阅读长文案时被反复拽回 */
+  planConfirmAnchored: {},
+  /** 点击「开始生图」后下一次进度更新前再锚定到该 job 视口 */
+  genFollowScrollJobId: null,
+  /** 确认生图进行中：阻止全量 loadConversationDetail 抢滚动 */
+  confirmingGenJobId: null,
+  /** 点击开始生图时锁定 thread scrollTop，避免进度更新把视口拉走 */
+  threadScrollLockTop: null,
+  threadScrollLockUntil: 0,
+  /** 生图确认后短时间内禁止自动贴底/重载抢滚动 */
+  generationScrollPinJobId: null,
+  generationScrollPinUntil: 0,
+  /** 当前会话用户关注的生图 job（完成时优先锚定） */
+  focusGenJobId: null,
+  /** 已处理终态的 job，避免 SSE+轮询重复全量重绘 */
+  genTerminalHandled: {},
+  /** 终态后收尾拉图：抑制反复锚定滚动 */
+  genGallerySettling: null,
+  genFinishWatchActive: {},
+  /** jobId -> { timer, ticks, convId } */
+  gallerySyncPolls: {},
+  genReanchorTimers: {},
+  /** endThreadPrepare 延迟贴底，切换/锚定前需清除 */
+  threadPrepareScrollTimerIds: [],
   sending: false,
   chatModel: "",
   imageModel: "",
   visionModel: "",
   catalog: null,
+  marketplaceId: "tk_shop_mx",
   convSearchQuery: "",
   convSearchOpen: false,
   lightboxRefine: null,
+  /** 局部修复「新上传参考」模式下的 Attachment id */
+  lightboxRefineUpload: null,
   lightboxRefinePoll: null,
   adminUsers: {
     q: "",
@@ -36,10 +67,23 @@ let state = {
     count: 0,
   },
   adminUsersSearchTimer: null,
+  adminUsage: {
+    period: "day",
+    anchor: "",
+    q: "",
+    page: 1,
+    pageSize: 20,
+    totalPages: 1,
+    count: 0,
+  },
+  adminUsageSearchTimer: null,
   shareUserSearch: "",
   shareUserSearchTimer: null,
   currentConvHasMessages: false,
   currentConvIsShared: false,
+  /** 当前选中的 Listing 快捷话术 marketplace_id */
+  listingPromptPresetId: null,
+  aspectRatio: "1:1",
 };
 
 function getCookie(name) {
@@ -363,11 +407,81 @@ function jobIdsInThread(box) {
 
 function stopAllGenWatchers() {
   Object.keys(state.genWatchers).forEach((id) => stopGenerationWatch(Number(id)));
+  stopAllGallerySyncPolls();
   hideGenProgressIfIdle();
+}
+
+function stopGallerySyncPoll(jobId) {
+  const p = state.gallerySyncPolls[jobId];
+  if (!p) return;
+  if (p.timer) clearInterval(p.timer);
+  delete state.gallerySyncPolls[jobId];
+}
+
+function stopAllGallerySyncPolls() {
+  Object.keys(state.gallerySyncPolls).forEach((id) => stopGallerySyncPoll(Number(id)));
+}
+
+function stopGallerySyncPollsForThread(box) {
+  if (!box) return;
+  jobIdsInThread(box).forEach((id) => stopGallerySyncPoll(id));
+}
+
+async function tickGallerySyncPoll(jobId) {
+  const poll = state.gallerySyncPolls[jobId];
+  if (!poll) return;
+  if (poll.convId !== state.currentId) {
+    stopGallerySyncPoll(jobId);
+    return;
+  }
+  poll.ticks = (poll.ticks || 0) + 1;
+  if (poll.ticks > GALLERY_SYNC_MAX_TICKS) {
+    stopGallerySyncPoll(jobId);
+    return;
+  }
+  let job = null;
+  try {
+    job = await api(`/api/generations/${jobId}/`);
+    ChatCache.setJob(jobId, job);
+  } catch (_) {
+    return;
+  }
+  if (!state.gallerySyncPolls[jobId]) return;
+  if (jobBelongsToActiveConversation(job)) {
+    updateJobInChat(job, { skipScroll: true });
+  }
+  if (!jobGalleryNeedsRefresh(job)) {
+    stopGallerySyncPoll(jobId);
+    if (jobBelongsToActiveConversation(job)) {
+      updateJobInChat(job, { skipScroll: false });
+    }
+  }
+}
+
+/** 任务已终态但画廊仍缺 URL 时持续 reconcile+刷新 DOM（不整页 reload） */
+function startGallerySyncPoll(jobId, convId = state.currentId) {
+  if (!jobId || !convId) return;
+  const cached = ChatCache.getJob(jobId);
+  if (cached && !jobGalleryNeedsRefresh(cached)) return;
+  const existing = state.gallerySyncPolls[jobId];
+  if (existing?.convId === convId && existing.timer) return;
+  stopGallerySyncPoll(jobId);
+  state.gallerySyncPolls[jobId] = { timer: null, ticks: 0, convId };
+  void tickGallerySyncPoll(jobId);
+  state.gallerySyncPolls[jobId].timer = setInterval(() => {
+    void tickGallerySyncPoll(jobId);
+  }, GALLERY_SYNC_INTERVAL_MS);
 }
 
 function isJobRunning(job) {
   return job && !["succeeded", "failed", "cancelled"].includes(job.status);
+}
+
+function isJobActivelyGenerating(job) {
+  if (!isJobRunning(job)) return false;
+  const plan = job.plan_json || {};
+  if (job.status === "pending" && plan.awaiting_generation_confirm) return false;
+  return true;
 }
 
 function hideGenProgressIfIdle() {
@@ -415,8 +529,9 @@ function isGenWatchActive(jobId) {
   return !!w && w.convId === state.currentId && !w.done;
 }
 
-/** 回到该会话：仅视口内画廊拉进度；进行中的再恢复轮询 */
-async function resumeWatchersForThread(box) {
+/** 回到该会话：恢复进行中的轮询；视口内画廊可立即拉一次进度 */
+async function resumeWatchersForThread(box, options = {}) {
+  const forceAll = !!options.forceAll;
   if (!state.currentId || !box) return;
   LazyMedia.scan(box);
   for (const jobId of jobIdsInThread(box)) {
@@ -424,6 +539,30 @@ async function resumeWatchersForThread(box) {
     if (!body) continue;
     const statusEl = body.querySelector(".gen-status-line");
     const gridEl = body.querySelector(".gallery");
+
+    if (forceAll) {
+      try {
+        const job = await api(`/api/generations/${jobId}/`);
+        ChatCache.setJob(jobId, job);
+        updateJobInChat(job);
+        if (jobGalleryNeedsRefresh(job)) {
+          startGallerySyncPoll(jobId, state.currentId);
+        }
+        if (isJobRunning(job) && !jobAwaitingPlanConfirm(job)) {
+          watchGeneration(jobId, state.currentId);
+          const ui = getGenProgressUi();
+          if (ui?.label) {
+            setGenProgressUi(formatJobProgress(job), { running: true, jobId });
+          }
+        } else if (jobGalleryNeedsRefresh(job)) {
+          void finishGenerationWatchWhenReady(jobId);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      continue;
+    }
+
     if (!gridEl || !LazyMedia.isInViewport(gridEl)) continue;
     window.onGalleryEnterViewport?.(jobId, gridEl, statusEl);
   }
@@ -491,7 +630,15 @@ function resolveInitialConversationId() {
   return state.conversations[0]?.id ?? null;
 }
 
+function clearThreadPrepareScrollTimers() {
+  for (const id of state.threadPrepareScrollTimerIds || []) {
+    clearTimeout(id);
+  }
+  state.threadPrepareScrollTimerIds = [];
+}
+
 function beginThreadPrepare() {
+  clearThreadPrepareScrollTimers();
   state.threadAnchoring = true;
   window.__iaThreadAnchoring = true;
   document.getElementById("thread-container")?.classList.add("thread-preparing");
@@ -522,6 +669,17 @@ function finishThreadPrepare() {
 /** 渲染时 scrollTop 仍在顶部，必须锚到底部后再开启视口懒加载 */
 function endThreadPrepare() {
   const container = document.getElementById("thread-container");
+  if (isThreadScrollLocked()) {
+    finishThreadPrepare();
+    enforceThreadScrollLock();
+    return;
+  }
+  if (isGenerationScrollPinned()) {
+    finishThreadPrepare();
+    const jid = state.generationScrollPinJobId ?? state.focusGenJobId;
+    if (jid && !isJobDomUpdateFrozen(jid)) scrollToGenerationJobTurn(jid);
+    return;
+  }
   if (!container) {
     finishThreadPrepare();
     return;
@@ -534,9 +692,11 @@ function endThreadPrepare() {
     if (isThreadAnchored() || attempts >= 30) {
       scrollThreadToBottom();
       finishThreadPrepare();
-      setTimeout(scrollThreadToBottom, 80);
-      setTimeout(scrollThreadToBottom, 200);
-      setTimeout(scrollThreadToBottom, 500);
+      const timers = [];
+      timers.push(setTimeout(scrollThreadToBottom, 80));
+      timers.push(setTimeout(scrollThreadToBottom, 200));
+      timers.push(setTimeout(scrollThreadToBottom, 500));
+      state.threadPrepareScrollTimerIds = timers;
       return;
     }
     requestAnimationFrame(tryAnchor);
@@ -562,7 +722,16 @@ function sortMessagesForDisplay(messages) {
 }
 
 function renderMessages(messages, options = {}) {
+  if (shouldBlockThreadFullReload() && !options.forceFullRender) {
+    return;
+  }
   const preserveScroll = !!options.preserveScroll;
+  const anchorJobId = options.anchorGenerationJobId
+    ? Number(options.anchorGenerationJobId)
+    : null;
+  if (anchorJobId && !isThreadScrollLocked()) {
+    pinScrollToGenerationJob(anchorJobId, 4, 180000);
+  }
   stopAllGenWatchers();
   if (state.currentId) ChatCache.clearThreadFragment(state.currentId);
   beginThreadPrepare();
@@ -580,14 +749,18 @@ function renderMessages(messages, options = {}) {
   }
   box.appendChild(frag);
   updateLoadOlderSentinel();
-  if (preserveScroll) {
+  if (preserveScroll && !anchorJobId) {
     finishThreadPrepare();
     if (container) {
       container.scrollTop = prevScroll + (container.scrollHeight - prevHeight);
     }
+  } else if (anchorJobId) {
+    finishThreadPrepare();
+    scrollToGenerationJobTurn(anchorJobId);
   } else {
     endThreadPrepare();
   }
+  void resumeWatchersForThread(box, { forceAll: true });
 }
 
 function buildMessageTurn(m) {
@@ -622,47 +795,63 @@ function buildMessageTurn(m) {
     body.prepend(wrap);
   }
 
-  if (m.metadata?.generation_snapshot) {
-    const snap = m.metadata.generation_snapshot;
-    const status = document.createElement("div");
-    status.className = "gen-status-line";
-    const imageCount = snap.image_count || (snap.images || []).length || 9;
-    status.textContent = formatJobProgress({
-      id: 0,
-      status: snap.status || "succeeded",
-      completed_count: snap.completed_count ?? (snap.images || []).filter((x) => x.url).length,
-      image_count: imageCount,
-    });
-    body.appendChild(status);
-    const grid = document.createElement("div");
-    grid.className = "gallery";
-    grid.dataset.generationSnapshot = "1";
-    body.appendChild(grid);
-    renderGalleryFromJob(
-      {
-        id: 0,
-        image_count: imageCount,
-        status: snap.status || "succeeded",
-        completed_count: snap.completed_count || 0,
-        images: snap.images || [],
-      },
-      grid
-    );
-    LazyMedia.scan(grid);
-  } else if (m.metadata?.generation_job_id) {
+  if (role === "assistant" && m.metadata?.planning_summary && !messageAwaitingPlanConfirm(m)) {
+    const summaryMd = String(m.metadata.planning_summary);
+    if (summaryMd.trim()) {
+      const actions = document.createElement("div");
+      actions.className = "gen-plan-actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gen-plan-btn";
+      btn.textContent = "查看策划摘要";
+      btn.onclick = () => {
+        const box = turn.querySelector(".msg-plan-summary");
+        if (box) {
+          box.classList.toggle("hidden");
+          btn.textContent = box.classList.contains("hidden") ? "查看策划摘要" : "收起策划摘要";
+          return;
+        }
+        const detail = document.createElement("div");
+        detail.className = "msg-text msg-plan-summary";
+        setMessageContent(detail, summaryMd, "assistant");
+        body.appendChild(detail);
+        btn.textContent = "收起策划摘要";
+      };
+      actions.appendChild(btn);
+      body.appendChild(actions);
+    }
+  }
+
+  if (m.metadata?.generation_job_id) {
     const jobId = m.metadata.generation_job_id;
     body.dataset.generationJob = String(jobId);
-    const running = !["succeeded", "failed", "cancelled"].includes(m.metadata.generation_phase);
+    const awaitingPlan = messageAwaitingPlanConfirm(m);
+    const phase = m.metadata.generation_phase || "pending";
+    const running =
+      !awaitingPlan && !["succeeded", "failed", "cancelled"].includes(phase);
     const status = document.createElement("div");
     status.className = "gen-status-line" + (running ? " shimmer" : "");
-    status.textContent = formatJobProgress({
-      id: jobId,
-      status: m.metadata.generation_phase || "running",
-      completed_count: m.metadata.completed_count || 0,
-      image_count: m.metadata.image_count || 9,
-      queue_position: m.metadata.queue_position,
-    });
+    if (awaitingPlan) {
+      status.textContent = `策划完成，待确认生图 · 0/${m.metadata.image_count || 9} 张 · 任务 #${jobId}`;
+    } else {
+      const cachedJob = ChatCache.getJob(jobId);
+      if (cachedJob) {
+        status.textContent = formatJobProgress(cachedJob);
+      } else {
+        status.textContent = formatJobProgress({
+          id: jobId,
+          status: phase,
+          completed_count: m.metadata.completed_count || 0,
+          image_count: m.metadata.image_count || 9,
+          queue_position: m.metadata.queue_position,
+          plan_json: {},
+        });
+      }
+    }
     body.appendChild(status);
+    if (awaitingPlan) {
+      attachPlanConfirmActions(body, Number(jobId), null);
+    }
     const grid = document.createElement("div");
     grid.className = "gallery";
     grid.dataset.jobGallery = String(jobId);
@@ -671,6 +860,36 @@ function buildMessageTurn(m) {
     if (!state.threadAnchoring && LazyMedia.isInViewport(grid)) {
       window.onGalleryEnterViewport?.(jobId, grid, status);
     }
+  } else if (m.metadata?.generation_snapshot) {
+    const snap = m.metadata.generation_snapshot;
+    const snapJobId = Number(m.metadata.generation_job_id) || 0;
+    if (snapJobId) body.dataset.generationJob = String(snapJobId);
+    const status = document.createElement("div");
+    status.className = "gen-status-line";
+    const imageCount = snap.image_count || (snap.images || []).length || 9;
+    status.textContent = formatJobProgress({
+      id: snapJobId || 0,
+      status: snap.status || "succeeded",
+      completed_count: snap.completed_count ?? (snap.images || []).filter((x) => x.url).length,
+      image_count: imageCount,
+    });
+    body.appendChild(status);
+    const grid = document.createElement("div");
+    grid.className = "gallery";
+    grid.dataset.generationSnapshot = "1";
+    if (snapJobId) grid.dataset.jobGallery = String(snapJobId);
+    body.appendChild(grid);
+    renderGalleryFromJob(
+      {
+        id: snapJobId || 0,
+        image_count: imageCount,
+        status: snap.status || "succeeded",
+        completed_count: snap.completed_count || 0,
+        images: snap.images || [],
+      },
+      grid
+    );
+    LazyMedia.scan(grid);
   }
 
   return turn;
@@ -713,13 +932,162 @@ async function loadOlderMessages() {
 }
 
 function onThreadScrollNearTop() {
-  if (state.threadAnchoring) return;
+  if (state.threadAnchoring || isGenerationScrollPinned()) return;
   const container = document.getElementById("thread-container");
   if (!container || container.scrollTop > 80) return;
   loadOlderMessages().catch(() => {});
 }
 
+function isGenerationScrollPinned() {
+  return (
+    state.generationScrollPinUntil &&
+    Date.now() < state.generationScrollPinUntil &&
+    state.generationScrollPinJobId != null
+  );
+}
+
+function isThreadScrollLocked() {
+  return Boolean(state.threadScrollLockUntil && Date.now() < state.threadScrollLockUntil);
+}
+
+/** 仅在提交后极短时间内防止程序性滚动抢位；不阻止用户手动滑屏 */
+function preserveThreadScroll(ms = 1500) {
+  const container = document.getElementById("thread-container");
+  if (!container) return;
+  state.threadScrollLockTop = container.scrollTop;
+  state.threadScrollLockUntil = Date.now() + ms;
+}
+
+function beginThreadScrollLock(jobId, { markConfirming = false, scrollBurstMs = 1500 } = {}) {
+  const container = document.getElementById("thread-container");
+  if (!container) return;
+  state.threadScrollLockTop = container.scrollTop;
+  state.threadScrollLockUntil = Date.now() + scrollBurstMs;
+  if (jobId) {
+    state.focusGenJobId = jobId;
+    state.generationScrollPinJobId = jobId;
+    state.generationScrollPinUntil = Date.now() + 120000;
+    if (markConfirming) state.confirmingGenJobId = jobId;
+  }
+}
+
+function releaseThreadScrollLockFromUser() {
+  if (!isThreadScrollLocked()) return;
+  clearThreadScrollLock();
+}
+
+/** 发送生图后：把本地乐观用户气泡与后端 user_message 对齐，避免再全量拉会话 */
+function syncServerUserMessage(msg) {
+  if (!msg) return;
+  const box = document.getElementById("messages");
+  if (!box) return;
+  if (msg.id != null) {
+    const existing = box.querySelector(`.turn-user[data-message-id="${msg.id}"]`);
+    if (existing) return;
+  }
+  const userTurns = [...box.querySelectorAll(".turn-user")];
+  const last = userTurns[userTurns.length - 1];
+  if (last && !last.dataset.messageId) {
+    if (msg.id != null) last.dataset.messageId = String(msg.id);
+    const textEl = last.querySelector(".msg-text");
+    if (textEl && msg.content) setMessageContent(textEl, msg.content, "user");
+    return;
+  }
+  if (msg.id != null && !box.querySelector(`.turn-user[data-message-id="${msg.id}"]`)) {
+    appendMessageDom(msg, false);
+  }
+}
+
+function mergeServerMessagesIntoCache(convId, userMsg, assistantMsg) {
+  if (!convId) return;
+  const row = ChatCache.getDetail(convId);
+  if (!row?.detail) return;
+  const list = sortMessagesForDisplay(row.detail.messages || []);
+  const byId = new Map(list.filter((m) => m.id != null).map((m) => [m.id, m]));
+  for (const m of [userMsg, assistantMsg]) {
+    if (m?.id != null) byId.set(m.id, m);
+  }
+  row.detail.messages = sortMessagesForDisplay([...byId.values()]);
+  ChatCache.setDetail(convId, row.detail);
+}
+
+function clearThreadScrollLock() {
+  state.threadScrollLockTop = null;
+  state.threadScrollLockUntil = 0;
+}
+
+function clearGenerationScrollPin(jobId) {
+  if (jobId == null) return;
+  if (Number(state.generationScrollPinJobId) === Number(jobId)) {
+    state.generationScrollPinJobId = null;
+    state.generationScrollPinUntil = 0;
+  }
+  if (Number(state.focusGenJobId) === Number(jobId)) {
+    state.focusGenJobId = null;
+  }
+  if (Number(state.genFollowScrollJobId) === Number(jobId)) {
+    delete state.genFollowScrollJobId;
+  }
+}
+
+function scheduleGalleryLayoutReanchor(jobId) {
+  if (!jobId) return;
+  if (Number(state.genGallerySettling) === Number(jobId)) return;
+  const key = String(jobId);
+  if (state.genReanchorTimers[key]) return;
+  state.genReanchorTimers[key] = window.setTimeout(() => {
+    delete state.genReanchorTimers[key];
+    maybeReanchorGenerationJobTurn(jobId);
+  }, 160);
+}
+
+function enforceThreadScrollLock() {
+  if (!isThreadScrollLocked()) return;
+  const container = document.getElementById("thread-container");
+  if (!container || state.threadScrollLockTop == null) return;
+  if (Math.abs(container.scrollTop - state.threadScrollLockTop) > 1) {
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = state.threadScrollLockTop;
+    container.style.scrollBehavior = "";
+  }
+}
+
+function isJobDomUpdateFrozen(jobId) {
+  return (
+    (state.confirmingGenJobId && Number(state.confirmingGenJobId) === Number(jobId)) ||
+    (isThreadScrollLocked() &&
+      state.generationScrollPinJobId != null &&
+      Number(state.generationScrollPinJobId) === Number(jobId))
+  );
+}
+
+function hasActiveGenWatcherOnCurrentConv() {
+  if (!state.currentId) return false;
+  for (const w of Object.values(state.genWatchers)) {
+    if (w?.convId === state.currentId && !w.done) return true;
+  }
+  return false;
+}
+
+function shouldBlockThreadFullReload() {
+  return Boolean(state.confirmingGenJobId || hasActiveGenWatcherOnCurrentConv());
+}
+
+function generationJobTurnIsLatest(jobId) {
+  const body = primaryGenerationJobBody(jobId);
+  const turn = body?.closest(".turn");
+  const lastTurn = document.getElementById("messages")?.querySelector(".turn:last-of-type");
+  return !!(turn && lastTurn && turn === lastTurn);
+}
+
 function scrollThreadToBottom() {
+  if (state.threadAnchoring || isThreadScrollLocked()) return;
+  if (
+    isGenerationScrollPinned() &&
+    !generationJobTurnIsLatest(state.generationScrollPinJobId)
+  ) {
+    return;
+  }
   const container = document.getElementById("thread-container");
   if (!container) return;
   container.style.scrollBehavior = "auto";
@@ -742,7 +1110,252 @@ function scrollThreadToLatest() {
   endThreadPrepare();
 }
 
+function generationJobBodies(jobId) {
+  const jid = String(jobId);
+  return [
+    ...document.querySelectorAll(`[data-generation-job="${jid}"]`),
+    ...document.querySelectorAll(`[data-generation-job="${Number(jobId)}"]`),
+  ];
+}
+
+function primaryGenerationJobBody(jobId) {
+  const bodies = generationJobBodies(jobId);
+  return bodies.length ? bodies[bodies.length - 1] : null;
+}
+
+function shouldHoldGenerationScroll(jobId) {
+  if (isThreadScrollLocked() || isJobDomUpdateFrozen(jobId)) return false;
+  return (
+    isGenerationScrollPinned() ||
+    (state.focusGenJobId != null && Number(state.focusGenJobId) === Number(jobId))
+  );
+}
+
+function maybeReanchorGenerationJobTurn(jobId) {
+  if (!shouldHoldGenerationScroll(jobId)) return;
+  scrollToGenerationJobTurn(jobId);
+}
+
+/** 将视口滚到指定生图任务；若该 job 在会话末尾则贴底（靠近输入框） */
+function scrollToGenerationJobTurn(jobId, { preferBottom = true } = {}) {
+  if (isThreadScrollLocked() && Number(state.generationScrollPinJobId) === Number(jobId)) {
+    enforceThreadScrollLock();
+    return true;
+  }
+  const container = document.getElementById("thread-container");
+  const body = primaryGenerationJobBody(jobId);
+  if (!container || !body) return false;
+  const turn = body.closest(".turn");
+  container.style.scrollBehavior = "auto";
+  if (preferBottom && generationJobTurnIsLatest(jobId) && turn) {
+    turn.scrollIntoView({ block: "end", inline: "nearest", behavior: "auto" });
+    container.scrollTop = maxThreadScrollTop();
+    container.style.scrollBehavior = "";
+    return true;
+  }
+  const focus = turn || body.querySelector(".gen-status-line") || body;
+  const cRect = container.getBoundingClientRect();
+  const tRect = focus.getBoundingClientRect();
+  const top = tRect.top - cRect.top + container.scrollTop - 20;
+  container.scrollTop = Math.max(0, Math.min(top, maxThreadScrollTop()));
+  container.style.scrollBehavior = "";
+  return true;
+}
+
+function pinScrollToGenerationJob(jobId, maxAttempts = 5, pinMs = 120000) {
+  if (!jobId) return;
+  state.generationScrollPinJobId = jobId;
+  state.generationScrollPinUntil = Date.now() + pinMs;
+  state.focusGenJobId = jobId;
+  clearThreadPrepareScrollTimers();
+  let attempt = 0;
+  const tick = () => {
+    if (state.generationScrollPinJobId == null || Number(state.generationScrollPinJobId) !== Number(jobId)) {
+      return;
+    }
+    if (Date.now() > state.generationScrollPinUntil) return;
+    const ok = scrollToGenerationJobTurn(jobId);
+    attempt += 1;
+    if (!ok && attempt < maxAttempts) {
+      setTimeout(tick, attempt < 3 ? 32 : 120);
+    } else if (attempt < 2) {
+      setTimeout(tick, 48);
+    }
+  };
+  tick();
+}
+
+function consumeGenFollowScroll(jobId) {
+  if (state.genFollowScrollJobId == null || Number(state.genFollowScrollJobId) !== Number(jobId)) {
+    return false;
+  }
+  delete state.genFollowScrollJobId;
+  scrollToGenerationJobTurn(jobId);
+  return true;
+}
+
+/** 策划预览完成后将视口锚定到该条助手消息（仅一次） */
+function scrollToPlanConfirmTurn(jobId) {
+  if (state.planConfirmAnchored[jobId]) return;
+  const container = document.getElementById("thread-container");
+  const body = document.querySelector(`[data-generation-job="${jobId}"]`);
+  const turn = body?.closest(".turn");
+  if (!container || !turn) return;
+  state.planConfirmAnchored[jobId] = true;
+  requestAnimationFrame(() => {
+    const cRect = container.getBoundingClientRect();
+    const tRect = turn.getBoundingClientRect();
+    const top = tRect.top - cRect.top + container.scrollTop - 16;
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = Math.max(0, top);
+    container.style.scrollBehavior = "";
+  });
+}
+
+function jobAwaitingPlanConfirm(job) {
+  const plan = job?.plan_json || {};
+  if (!job || job.status !== "pending" || !plan.awaiting_generation_confirm) return false;
+  return plan.plan_ready || (Array.isArray(plan.shots) && plan.shots.length > 0);
+}
+
+function messageAwaitingPlanConfirm(m) {
+  if (!m?.metadata?.awaiting_generation_confirm) return false;
+  const phase = String(m.metadata.generation_phase || "").toLowerCase();
+  if (["running", "queued", "succeeded", "failed", "cancelled"].includes(phase)) return false;
+  return true;
+}
+
+function removePlanConfirmActions(body) {
+  const host = body || null;
+  if (!host) return;
+  host.querySelectorAll(".gen-plan-actions").forEach((el) => el.remove());
+}
+
+function attachPlanConfirmActions(body, jobId, job) {
+  if (!body || !jobId) return;
+  if (job && !jobAwaitingPlanConfirm(job)) {
+    removePlanConfirmActions(body);
+    return;
+  }
+  if (body.querySelector(".gen-plan-actions")) return;
+  const actions = document.createElement("div");
+  actions.className = "gen-plan-actions";
+  const runBtn = document.createElement("button");
+  runBtn.type = "button";
+  runBtn.className = "gen-plan-btn gen-plan-btn-primary";
+  runBtn.textContent = "开始生图";
+  runBtn.onclick = () => {
+    runBtn.disabled = true;
+    const sib = actions.querySelector(".gen-plan-btn:not(.gen-plan-btn-primary)");
+    if (sib) sib.disabled = true;
+    confirmGenerationPlan(jobId).catch((e) => {
+      alert(e.message);
+      runBtn.disabled = false;
+      if (sib) sib.disabled = false;
+    });
+  };
+  const optBtn = document.createElement("button");
+  optBtn.type = "button";
+  optBtn.className = "gen-plan-btn";
+  optBtn.textContent = "仅优化卖点";
+  optBtn.onclick = () => reoptimizeGenerationPlan(jobId).catch((e) => alert(e.message));
+  actions.append(runBtn, optBtn);
+  body.appendChild(actions);
+}
+
+function syncPlanPreviewInChat(job) {
+  if (!jobAwaitingPlanConfirm(job)) return;
+  const body = document.querySelector(`[data-generation-job="${job.id}"]`);
+  if (!body) return;
+  const plan = job.plan_json || {};
+  const summary = (plan.planning_summary || "").trim();
+  const textEl = body.querySelector(".msg-text");
+  if (textEl && summary) {
+    const hint =
+      "\n\n——\n确认策划无误后，点击下方 **「开始生图」**，或 **「仅优化卖点」** 后再生图。";
+    setMessageContent(textEl, summary + hint, "assistant");
+  } else if (textEl) {
+    setMessageContent(
+      textEl,
+      `已完成 ${job.image_count || 0} 条 Listing 主图策划，请确认后开始生图。`,
+      "assistant"
+    );
+  }
+  attachPlanConfirmActions(body, job.id, job);
+  const statusEl = body.querySelector(".gen-status-line");
+  if (statusEl) {
+    statusEl.textContent = formatJobProgress(job);
+    statusEl.classList.remove("shimmer");
+  }
+}
+
+async function handlePlanPreviewReady(job) {
+  if (!job?.id || !state.currentId) return;
+  if (state.planPreviewNotified[job.id]) return;
+  if (state.confirmingGenJobId && Number(state.confirmingGenJobId) === Number(job.id)) return;
+  state.planPreviewNotified[job.id] = true;
+  try {
+    const refreshed = await api(`/api/generations/${job.id}/`);
+    ChatCache.setJob(job.id, refreshed);
+    const hasDom = !!primaryGenerationJobBody(job.id);
+    if (hasDom) {
+      syncPlanPreviewInChat(refreshed);
+      scrollToPlanConfirmTurn(job.id);
+    } else {
+      ChatCache.invalidateConversation(state.currentId);
+      await loadConversationDetail(state.currentId, { anchorGenerationJobId: job.id });
+      syncPlanPreviewInChat(refreshed);
+      scrollToPlanConfirmTurn(job.id);
+    }
+  } catch (_) {
+    syncPlanPreviewInChat(job);
+    scrollToPlanConfirmTurn(job.id);
+  }
+  setGenProgressUi("策划已完成，请在对话中点击「开始生图」", { running: false, jobId: null });
+  stopGenerationWatch(job.id);
+}
+
+function effectiveJobStatus(job) {
+  if (!job) return "pending";
+  if (
+    (job.completed_count || 0) > 0 &&
+    job.status === "pending" &&
+    !jobAwaitingPlanConfirm(job)
+  ) {
+    return "running";
+  }
+  return job.status;
+}
+
+function assistantBubbleTextForJob(job) {
+  if (!job) return "";
+  if (jobAwaitingPlanConfirm(job)) {
+    return `已完成 ${job.image_count || 0} 条 Listing 主图策划，请确认后开始生图。`;
+  }
+  const st = effectiveJobStatus(job);
+  if (st === "queued") return "排队等待生图…";
+  if (st === "running") {
+    return `正在生成图片…（${job.completed_count || 0}/${job.image_count || 0}）`;
+  }
+  if (st === "pending") return "正在分析参考图并策划套图…";
+  if (st === "succeeded") {
+    return `已完成 ${job.image_count || job.completed_count || 0} 张套图。`;
+  }
+  if (st === "failed") {
+    return `生成失败（${job.completed_count || 0}/${job.image_count || 0} 张）。`;
+  }
+  if (st === "cancelled") return "已取消生成。";
+  return formatJobProgress(job);
+}
+
 function formatJobProgress(job) {
+  const status = effectiveJobStatus(job);
+  const view = job ? { ...job, status } : job;
+  if (jobAwaitingPlanConfirm(view)) {
+    let text = `策划完成，待确认生图 · 0/${job.image_count || 0} 张`;
+    if (job.id) text += ` · 任务 #${job.id}`;
+    return text;
+  }
   const statusMap = {
     pending: "准备中",
     planned: "策划完成，正在生图",
@@ -752,14 +1365,16 @@ function formatJobProgress(job) {
     failed: "失败",
     cancelled: "已取消",
   };
-  const label = statusMap[job.status] || job.status;
-  let text = `${label} · ${job.completed_count || 0}/${job.image_count} 张`;
-  if (job.id) text += ` · 任务 #${job.id}`;
-  if (job.queue_position) text += ` · 队列第 ${job.queue_position} 位`;
-  if (job.error_message) {
+  const label = statusMap[status] || status;
+  let text = `${label} · ${view.completed_count || 0}/${view.image_count} 张`;
+  if (view.id) text += ` · 任务 #${view.id}`;
+  if (view.queue_position) text += ` · 队列第 ${view.queue_position} 位`;
+  if (view.error_message) {
     const err =
-      job.error_message.length > 120 ? job.error_message.slice(0, 120) + "…" : job.error_message;
-    if (job.status === "failed" || job.status === "succeeded") text += ` · ${err}`;
+      view.error_message.length > 120
+        ? view.error_message.slice(0, 120) + "…"
+        : view.error_message;
+    if (status === "failed" || status === "succeeded") text += ` · ${err}`;
   }
   return text;
 }
@@ -845,7 +1460,15 @@ function appendMessageDom(m, scroll = true) {
   if (m.id != null) insertTurnInMessageOrder(m, turn, box);
   else box.appendChild(turn);
   LazyMedia.scan(turn);
-  if (scroll) scrollThreadToBottom();
+  if (scroll && !isThreadScrollLocked()) scrollThreadToBottom();
+  else if (scroll && isThreadScrollLocked()) {
+    const container = document.getElementById("thread-container");
+    if (container) {
+      container.scrollTop = maxThreadScrollTop();
+      state.threadScrollLockTop = container.scrollTop;
+    }
+  }
+  enforceThreadScrollLock();
   return turn.querySelector(".turn-body");
 }
 
@@ -859,11 +1482,23 @@ function bindGalleryImage(img, url, index, jobId) {
   img.alt = `套图 ${index}`;
   img.title = "点击查看大图";
   img.tabIndex = 0;
-  img.onclick = () => openImageLightbox(url, index, jobId);
+  const resolveJob = () => {
+    const slot = img.closest(".gallery-slot");
+    const fromSlot = Number(slot?.dataset?.lazyJobId);
+    if (fromSlot > 0) return fromSlot;
+    const fromGrid = Number(slot?.closest(".gallery")?.dataset?.jobGallery);
+    if (fromGrid > 0) return fromGrid;
+    const fromTurn = Number(slot?.closest("[data-generation-job]")?.dataset?.generationJob);
+    if (fromTurn > 0) return fromTurn;
+    const j = Number(jobId);
+    return j > 0 ? j : null;
+  };
+  const open = () => openImageLightbox(url, index, resolveJob());
+  img.onclick = open;
   img.onkeydown = (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      openImageLightbox(url, index, jobId);
+      open();
     }
   };
 }
@@ -894,9 +1529,12 @@ function renderGalleryFromJob(job, gridEl) {
     if (!slot) continue;
     const imgRec = byIndex[i];
     const existingUrl = slot.dataset.imageUrl || "";
+    const st = String(imgRec?.status || "").toLowerCase();
 
     if (imgRec?.url) {
-      if (existingUrl === imgRec.url && slot.querySelector("img")) continue;
+      const hasImg = !!slot.querySelector("img");
+      const staleLabel = /失败|生成中|待重试|同步中|重试中/.test(slot.textContent || "");
+      if (existingUrl === imgRec.url && hasImg && !staleLabel) continue;
       slot.dataset.imageUrl = imgRec.url;
       slot.dataset.lazyUrl = imgRec.url;
       slot.dataset.lazyIndex = String(i);
@@ -909,20 +1547,36 @@ function renderGalleryFromJob(job, gridEl) {
       } else {
         LazyMedia.observeGallerySlot(slot);
       }
-    } else if (imgRec?.status === "running") {
+    } else if (st === "succeeded") {
+      slot.className = "gallery-slot pending-img";
+      slot.dataset.imageUrl = "";
+      slot.textContent = `#${i} 加载中…`;
+    } else if (st === "running") {
       slot.className = "gallery-slot";
       slot.dataset.imageUrl = "";
+      slot.innerHTML = "";
       slot.textContent = `#${i} 生成中…`;
-    } else if (imgRec?.status === "failed") {
+    } else if (st === "failed") {
+      const jobLive = effectiveJobStatus(job);
+      const jobTerminal = ["succeeded", "failed", "cancelled"].includes(job.status);
       slot.className = "gallery-slot";
       slot.dataset.imageUrl = "";
-      slot.textContent = `#${i} 失败`;
+      slot.innerHTML = "";
+      if (!jobTerminal && (jobLive === "running" || jobLive === "queued")) {
+        slot.textContent = `#${i} 待重试`;
+      } else if (jobTerminal && !imgRec?.url) {
+        slot.textContent = `#${i} 同步中…`;
+      } else {
+        slot.textContent = `#${i} 失败`;
+      }
     } else if (!imgRec?.url && !slot.querySelector("img")) {
       slot.className = "gallery-slot";
       slot.dataset.imageUrl = "";
-      if (job.status === "running" && job.completed_count === i - 1) {
+      slot.innerHTML = "";
+      const jobLive = effectiveJobStatus(job);
+      if (jobLive === "running" && job.completed_count === i - 1) {
         slot.textContent = `#${i} 生成中…`;
-      } else if (!slot.textContent) {
+      } else {
         slot.textContent = `#${i}`;
       }
     }
@@ -947,8 +1601,25 @@ async function refreshJobGallery(jobId, gridEl, statusEl, options = {}) {
   try {
     const job = await api(`/api/generations/${jobId}/`);
     ChatCache.setJob(jobId, job);
-    if (!cached || cached.status !== job.status || cached.completed_count !== job.completed_count) {
+    const sig = generationJobImagesSignature(job);
+    const domStale =
+      force ||
+      [...(gridEl?.querySelectorAll(".gallery-slot") || [])].some((slot) =>
+        /同步中/.test(slot.textContent || "")
+      );
+    if (
+      domStale ||
+      !cached ||
+      cached.status !== job.status ||
+      cached.completed_count !== job.completed_count ||
+      generationJobImagesSignature(cached) !== sig
+    ) {
       applyJob(job);
+    }
+    if (jobGalleryNeedsRefresh(job)) {
+      startGallerySyncPoll(jobId, state.currentId);
+    } else {
+      stopGallerySyncPoll(jobId);
     }
     return job;
   } catch (_) {
@@ -968,6 +1639,11 @@ function hydrateGallerySlot(slot) {
   bindGalleryImage(img, url, index, jobId);
   slot.appendChild(img);
   delete slot.dataset.lazyUrl;
+  if (jobId) {
+    const onLayout = () => scheduleGalleryLayoutReanchor(jobId);
+    img.addEventListener("load", onLayout, { once: true });
+    img.addEventListener("error", onLayout, { once: true });
+  }
 }
 
 window.hydrateGallerySlot = hydrateGallerySlot;
@@ -978,32 +1654,59 @@ window.onGalleryEnterViewport = function onGalleryEnterViewport(jobId, grid, sta
     .then((job) => {
       grid.dataset.jobHydrated = "1";
       LazyMedia.scan(grid);
-      if (isJobRunning(job) && state.currentId) {
+      if (isJobRunning(job) && state.currentId && !jobAwaitingPlanConfirm(job)) {
         watchGeneration(jobId, state.currentId);
       }
     })
     .catch(() => {});
 };
 
-function updateJobInChat(job) {
-  const body = document.querySelector(`[data-generation-job="${job.id}"]`);
+function updateJobInChat(job, opts = {}) {
+  const skipScroll = !!opts.skipScroll;
+  const body = primaryGenerationJobBody(job.id);
   if (!body) return;
+  const frozen = isJobDomUpdateFrozen(job.id);
+  const terminal = ["succeeded", "failed", "cancelled"].includes(job.status);
+  if (jobAwaitingPlanConfirm(job) && state.planPreviewNotified[job.id]) {
+    return;
+  }
   const turn = body.closest(".turn");
-  if (turn?.parentNode && !turn.previousElementSibling?.classList.contains("turn-user")) {
+  if (
+    !frozen &&
+    !terminal &&
+    !jobAwaitingPlanConfirm(job) &&
+    turn?.parentNode &&
+    !turn.previousElementSibling?.classList.contains("turn-user")
+  ) {
     const lastUser = turn.parentNode.querySelector(".turn-user:last-of-type");
     if (lastUser && lastUser !== turn) {
       turn.parentNode.insertBefore(turn, lastUser.nextElementSibling);
     }
   }
+  if (jobAwaitingPlanConfirm(job)) {
+    attachPlanConfirmActions(body, job.id, job);
+    const statusElEarly = body.querySelector(".gen-status-line");
+    if (statusElEarly) {
+      statusElEarly.textContent = formatJobProgress(job);
+      statusElEarly.classList.remove("shimmer");
+    }
+    return;
+  }
+  removePlanConfirmActions(body);
   const statusEl = body.querySelector(".gen-status-line");
   const gridEl = body.querySelector(".gallery");
   const textEl = body.querySelector(".msg-text");
   if (statusEl) {
     statusEl.textContent = formatJobProgress(job);
-    const running = !["succeeded", "failed", "cancelled"].includes(job.status);
+    const running =
+      !jobAwaitingPlanConfirm(job) &&
+      !["succeeded", "failed", "cancelled"].includes(effectiveJobStatus(job));
     statusEl.classList.toggle("shimmer", running);
   }
-  if (textEl && ["succeeded", "failed", "cancelled"].includes(job.status)) {
+  if (textEl && isJobRunning(job) && !jobAwaitingPlanConfirm(job)) {
+    const live = assistantBubbleTextForJob(job);
+    if (live) setMessageContent(textEl, live, "assistant");
+  } else if (textEl && ["succeeded", "failed", "cancelled"].includes(job.status)) {
     const summary =
       job.status === "succeeded"
         ? `已完成 ${job.image_count || job.completed_count || 0} 张套图。`
@@ -1015,11 +1718,20 @@ function updateJobInChat(job) {
   renderGalleryFromJob(job, gridEl);
   LazyMedia.scan(gridEl);
   refreshLightboxStripFromJobIfOpen(job);
+  if (frozen) {
+    if (isThreadScrollLocked()) enforceThreadScrollLock();
+    return;
+  }
+  if (!skipScroll && consumeGenFollowScroll(job.id)) return;
+  if (terminal && !skipScroll && Number(state.genGallerySettling) !== Number(job.id)) {
+    scheduleGalleryLayoutReanchor(job.id);
+    return;
+  }
   const container = document.getElementById("thread-container");
   const nearBottom =
     container &&
     container.scrollHeight - container.scrollTop - container.clientHeight < 160;
-  if (nearBottom) scrollThreadToBottom();
+  if (nearBottom && !isGenerationScrollPinned()) scrollThreadToBottom();
 }
 
 function stopLightboxRefinePoll() {
@@ -1102,6 +1814,7 @@ function renderLightboxStrip(job, activeIndex) {
     btn.type = "button";
     btn.className = "lightbox-strip-item";
     btn.dataset.index = String(i);
+    btn.dataset.jobId = String(job.id);
     btn.setAttribute("role", "tab");
     const isActive = i === active;
     btn.setAttribute("aria-selected", isActive ? "true" : "false");
@@ -1117,8 +1830,12 @@ function renderLightboxStrip(job, activeIndex) {
     } else {
       btn.classList.add("placeholder");
       const st = rec?.status || "";
-      if (st === "failed") btn.textContent = `#${i} 失败`;
-      else if (st === "running") btn.textContent = `#${i} 生成中`;
+      if (st === "failed") {
+        const live = effectiveJobStatus(job);
+        if (live === "running" || live === "queued") btn.textContent = `#${i} 待重试`;
+        else if (job.status === "succeeded" && !rec?.url) btn.textContent = `#${i} 同步中`;
+        else btn.textContent = `#${i} 失败`;
+      } else if (st === "running") btn.textContent = `#${i} 生成中`;
       else btn.textContent = `#${i} …`;
     }
     btn.addEventListener("click", () => {
@@ -1145,7 +1862,9 @@ function refreshLightboxStripFromJobIfOpen(job) {
 
 async function switchLightboxSlot(index) {
   const ctx = state.lightboxRefine;
-  if (!ctx?.jobId) return;
+  const resolvedJobId = resolveLightboxJobId(ctx);
+  if (!resolvedJobId) return;
+  ctx.jobId = resolvedJobId;
   stopLightboxRefinePoll();
   await discardLightboxRefineCandidate();
   let job = ChatCache.getJob(ctx.jobId);
@@ -1176,6 +1895,49 @@ async function switchLightboxSlot(index) {
   }
 }
 
+function resetLightboxRefineUploadUi() {
+  state.lightboxRefineUpload = null;
+  const cb = document.getElementById("lightbox-refine-use-upload");
+  if (cb) cb.checked = false;
+  const wrap = document.getElementById("lightbox-refine-upload-wrap");
+  wrap?.classList.add("hidden");
+  const preview = document.getElementById("lightbox-refine-upload-preview");
+  preview?.classList.add("hidden");
+  const input = document.getElementById("lightbox-refine-upload-input");
+  if (input) input.value = "";
+  const thumb = document.getElementById("lightbox-refine-upload-thumb");
+  if (thumb) thumb.removeAttribute("src");
+  syncLightboxRefineHint();
+}
+
+function syncLightboxRefineHint() {
+  const el = document.getElementById("lightbox-refine-hint");
+  const useUpload = document.getElementById("lightbox-refine-use-upload")?.checked;
+  if (!el) return;
+  if (useUpload) {
+    el.innerHTML =
+      "仅参考 <span class=\"lightbox-refine-tag\">新上传图片</span> + 下方修复说明生成；不使用商品原图与当前成图。确认后替换本槽位。";
+  } else {
+    el.innerHTML =
+      "参考 <span class=\"lightbox-refine-tag\">商品原图</span> " +
+      "<span class=\"lightbox-refine-plus\">+</span> " +
+      "<span class=\"lightbox-refine-tag\">当前成图</span> 双图生成，确认后才会替换套图槽位。";
+  }
+}
+
+async function uploadLightboxRefineReference(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const data = await api("/api/uploads/", { method: "POST", body: fd });
+  state.lightboxRefineUpload = { id: data.id, name: data.original_name || file.name, url: data.url };
+  const preview = document.getElementById("lightbox-refine-upload-preview");
+  const thumb = document.getElementById("lightbox-refine-upload-thumb");
+  const nameEl = document.getElementById("lightbox-refine-upload-name");
+  if (thumb && data.url) thumb.src = data.url;
+  if (nameEl) nameEl.textContent = state.lightboxRefineUpload.name || "参考图";
+  preview?.classList.remove("hidden");
+}
+
 async function openImageLightbox(url, index, jobId) {
   const box = document.getElementById("image-lightbox");
   const img = document.getElementById("lightbox-img");
@@ -1184,8 +1946,16 @@ async function openImageLightbox(url, index, jobId) {
   if (!box || !img) return;
   stopLightboxRefinePoll();
   await discardLightboxRefineCandidate();
+  resetLightboxRefineUploadUi();
 
-  const jid = Number(jobId) || null;
+  let jid = Number(jobId);
+  if (!jid || jid <= 0) {
+    const capHint = Number(document.getElementById("image-lightbox")?.dataset?.activeJobId);
+    if (capHint > 0) jid = capHint;
+    else jid = resolveLightboxJobId({ jobId }) || null;
+  } else {
+    jid = jid || null;
+  }
   let job = null;
   if (jid) {
     job = ChatCache.getJob(jid);
@@ -1219,6 +1989,7 @@ async function openImageLightbox(url, index, jobId) {
     promptEl.placeholder =
       "例如：人物更自然、减少 AI 感；保持构图；产品包装与商品原图一致…";
   }
+  syncLightboxRefineHint();
   const submitBtn = document.getElementById("lightbox-refine-submit");
   if (submitBtn) submitBtn.disabled = !jid || !resolvedUrl;
   renderLightboxStrip(job, idx);
@@ -1226,6 +1997,7 @@ async function openImageLightbox(url, index, jobId) {
   if (jid) {
     resolveLightboxDefaultImageModel(jid).catch(() => {});
   }
+  if (box) box.dataset.activeJobId = jid ? String(jid) : "";
   box.classList.remove("hidden");
   document.body.classList.add("lightbox-open");
 }
@@ -1239,7 +2011,9 @@ function closeImageLightbox() {
     discardLightboxRefineCandidate().catch(() => {});
   }
   state.lightboxRefine = null;
+  resetLightboxRefineUploadUi();
   box.classList.add("hidden");
+  delete box.dataset.activeJobId;
   document.body.classList.remove("lightbox-open");
   showLightboxViewMode();
   setLightboxRefineStatus("");
@@ -1252,37 +2026,84 @@ function closeImageLightbox() {
   wrap?.classList.add("hidden");
 }
 
+function resolveLightboxJobId(ctx) {
+  const fromBox = Number(document.getElementById("image-lightbox")?.dataset?.activeJobId);
+  if (Number.isFinite(fromBox) && fromBox > 0) return fromBox;
+  const n = Number(ctx?.jobId);
+  if (Number.isFinite(n) && n > 0) return n;
+  const fj = Number(state.focusGenJobId);
+  if (Number.isFinite(fj) && fj > 0) return fj;
+  const fromStrip = Number(
+    document.querySelector("#lightbox-strip .lightbox-strip-item.is-active")?.dataset?.jobId
+  );
+  if (Number.isFinite(fromStrip) && fromStrip > 0) return fromStrip;
+  const gallery = document.querySelector(
+    `.gallery[data-job-gallery="${fj}"]`
+  );
+  const fromGallery = Number(gallery?.dataset?.jobGallery);
+  if (Number.isFinite(fromGallery) && fromGallery > 0) return fromGallery;
+  const fromDom = Number(
+    document.querySelector(`[data-generation-job="${fj}"]`)?.dataset?.generationJob
+  );
+  if (Number.isFinite(fromDom) && fromDom > 0) return fromDom;
+  const cap = document.getElementById("lightbox-caption")?.textContent || "";
+  const capMatch = cap.match(/任务\s*(\d+)/);
+  if (capMatch) return Number(capMatch[1]);
+  const any = document.querySelector("[data-generation-job]");
+  const fallback = Number(any?.dataset?.generationJob);
+  if (Number.isFinite(fallback) && fallback > 0) return fallback;
+  const anyGallery = Number(document.querySelector(".gallery[data-job-gallery]")?.dataset?.jobGallery);
+  return Number.isFinite(anyGallery) && anyGallery > 0 ? anyGallery : null;
+}
+
 async function downloadAllLightboxImages() {
   const ctx = state.lightboxRefine;
-  if (!ctx?.jobId) return;
+  const jobId = resolveLightboxJobId(ctx);
   const btn = document.getElementById("lightbox-download-all");
-  if (btn) btn.disabled = true;
+  if (!jobId) {
+    alert("无法识别套图任务，请从本对话的套图画廊打开大图后再下载");
+    return;
+  }
+  const label = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "打包下载中…";
+  }
   try {
-    const job = await api(`/api/generations/${ctx.jobId}/`);
-    ChatCache.setJob(ctx.jobId, job);
-    const items = (job.images || [])
-      .filter((x) => x.url)
-      .sort((a, b) => Number(a.index) - Number(b.index));
-    if (!items.length) {
-      alert("暂无可下载的成片");
-      return;
+    const res = await fetch(`/api/generations/${jobId}/download-all/`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/zip, application/json;q=0.9, */*;q=0.8",
+        "X-CSRFToken": getCookie("csrftoken") || "",
+      },
+    });
+    if (!res.ok) {
+      let detail = "下载失败";
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = data.detail;
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(detail);
     }
-    for (let i = 0; i < items.length; i++) {
-      const rec = items[i];
-      const a = document.createElement("a");
-      a.href = galleryImageSrc(rec.url);
-      a.download = `job${ctx.jobId}_slot${rec.index}.png`;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      await new Promise((r) => setTimeout(r, 380));
-    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `generation_${jobId}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   } catch (err) {
     alert(err.message || "下载失败");
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) {
+      btn.disabled = false;
+      if (label) btn.textContent = label;
+    }
   }
 }
 
@@ -1327,12 +2148,22 @@ async function submitLightboxRefine() {
   setLightboxRefineStatus("正在提交…");
   const imageModel =
     document.getElementById("lightbox-refine-image-model")?.value || state.imageModel;
+  const useUpload = Boolean(document.getElementById("lightbox-refine-use-upload")?.checked);
+  const body = { prompt, image_model: imageModel, reference_mode: useUpload ? "upload_only" : "dual" };
+  if (useUpload) {
+    if (!state.lightboxRefineUpload?.id) {
+      setLightboxRefineStatus("请先上传参考图片", true);
+      if (submitBtn) submitBtn.disabled = false;
+      return;
+    }
+    body.reference_attachment_id = state.lightboxRefineUpload.id;
+  }
   try {
     const data = await api(
       `/api/generations/${ctx.jobId}/slots/${ctx.index}/refine/`,
       {
         method: "POST",
-        body: JSON.stringify({ prompt, image_model: imageModel }),
+        body: JSON.stringify(body),
       }
     );
     ctx.candidateId = data.id;
@@ -1405,6 +2236,107 @@ function retryLightboxRefine() {
   document.getElementById("lightbox-refine-submit").disabled = false;
 }
 
+function generationJobImagesSignature(job) {
+  if (!job?.images?.length) return "";
+  return job.images
+    .map((im) => `${im.index}:${String(im.status || "").toLowerCase()}:${im.url || ""}`)
+    .sort()
+    .join("|");
+}
+
+function jobGalleryNeedsRefresh(job) {
+  if (!job) return false;
+  const total = Number(job.image_count) || 0;
+  if (total <= 0) return false;
+  const images = job.images || [];
+  const byIndex = {};
+  images.forEach((im) => {
+    byIndex[Number(im.index)] = im;
+  });
+  for (let i = 1; i <= total; i++) {
+    const im = byIndex[i];
+    if (!im) return true;
+    const st = String(im.status || "").toLowerCase();
+    if (st === "running" || st === "pending") return true;
+    if (st === "succeeded" && !im.url) return true;
+    if (
+      st === "failed" &&
+      ["succeeded", "failed", "cancelled"].includes(job.status) &&
+      !im.url
+    ) {
+      return true;
+    }
+  }
+  if (job.status === "running" && (job.completed_count || 0) < total) return true;
+  return false;
+}
+
+function shouldStopGenerationWatch(job) {
+  if (!job) return true;
+  if (!["succeeded", "failed", "cancelled"].includes(job.status)) return false;
+  return !jobGalleryNeedsRefresh(job);
+}
+
+/** 任务终态后画廊仍可能落后（末镜落盘/SSE 提前结束），再拉几轮 */
+async function finishGenerationWatchWhenReady(jobId) {
+  if (!jobId) return;
+  if (state.genFinishWatchActive[jobId]) return;
+  state.genFinishWatchActive[jobId] = true;
+  const prevSettling = state.genGallerySettling;
+  state.genGallerySettling = jobId;
+  const FINISH_POLL_MS = 1200;
+  const FINISH_MAX_ROUNDS = 14;
+  let lastSig = "";
+  try {
+    for (let i = 0; i < FINISH_MAX_ROUNDS; i++) {
+      let job = null;
+      try {
+        job = await api(`/api/generations/${jobId}/`);
+        ChatCache.setJob(jobId, job);
+      } catch (_) {
+        await new Promise((r) => setTimeout(r, FINISH_POLL_MS));
+        continue;
+      }
+      const sig = `${job.status}:${job.completed_count}:${generationJobImagesSignature(job)}`;
+      if (jobBelongsToActiveConversation(job) && sig !== lastSig) {
+        lastSig = sig;
+        updateJobInChat(job, { skipScroll: true });
+      }
+      if (shouldStopGenerationWatch(job)) {
+        if (jobBelongsToActiveConversation(job)) {
+          updateJobInChat(job, { skipScroll: false });
+        }
+        stopGallerySyncPoll(jobId);
+        stopGenerationWatch(jobId);
+        hideGenProgressIfIdle();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, FINISH_POLL_MS));
+    }
+    try {
+      const job = await api(`/api/generations/${jobId}/`);
+      ChatCache.setJob(jobId, job);
+      if (jobBelongsToActiveConversation(job)) {
+        updateJobInChat(job, { skipScroll: false });
+      }
+    } catch (_) {}
+    stopGenerationWatch(jobId);
+    hideGenProgressIfIdle();
+    try {
+      const job = ChatCache.getJob(jobId);
+      if (job && jobGalleryNeedsRefresh(job)) {
+        startGallerySyncPoll(jobId, state.currentId);
+      }
+    } catch (_) {}
+  } finally {
+    delete state.genFinishWatchActive[jobId];
+    state.genGallerySettling = prevSettling;
+    clearGenerationScrollPin(jobId);
+    clearThreadScrollLock();
+    delete state.confirmingGenJobId;
+  }
+}
+
 function stopGenerationWatch(jobId) {
   const w = state.genWatchers[jobId];
   if (!w) return;
@@ -1415,46 +2347,136 @@ function stopGenerationWatch(jobId) {
   }
   delete state.genWatchers[jobId];
   if (state.activeGenEs === w.es) state.activeGenEs = null;
+  if (Object.keys(state.genWatchers).length === 0) {
+    clearThreadScrollLock();
+  }
 }
 
 function jobBelongsToActiveConversation(job) {
   if (job.conversation != null && state.currentId != null) {
     return Number(job.conversation) === Number(state.currentId);
   }
-  const body = document.querySelector(`[data-generation-job="${job.id}"]`);
+  const body = primaryGenerationJobBody(job.id);
   return !!body && document.getElementById("messages")?.contains(body);
 }
 
-function applyGenerationJobProgress(job) {
+function applyGenerationJobProgress(job, opts = {}) {
   if (!jobBelongsToActiveConversation(job)) return;
-  updateJobInChat(job);
+  if (Number(state.genGallerySettling) === Number(job.id) && !opts.forceProgress) {
+    return;
+  }
+  const frozen = isJobDomUpdateFrozen(job.id);
+  updateJobInChat(job, { skipScroll: !!opts.skipScroll });
+  if (frozen) {
+    if (jobGalleryNeedsRefresh(job) && isGenWatchActive(job.id)) {
+      void pollGenerationJob(job.id);
+    }
+    const terminalEarly = ["succeeded", "failed", "cancelled"].includes(job.status);
+    if (terminalEarly) {
+      resetGenCancelButton();
+      if (job.status === "succeeded") {
+        setGenProgressUi(formatJobProgress(job), { running: false });
+        setTimeout(hideGenProgressIfIdle, 2500);
+      } else {
+        hideGenProgressIfIdle();
+      }
+      enforceThreadScrollLock();
+      setTimeout(() => {
+        delete state.confirmingGenJobId;
+        clearThreadScrollLock();
+      }, 2500);
+      return;
+    }
+    if (!jobAwaitingPlanConfirm(job)) {
+      const active = isJobActivelyGenerating(job);
+      setGenProgressUi(formatJobProgress(job), {
+        running: active,
+        jobId: active ? job.id : null,
+      });
+    }
+    enforceThreadScrollLock();
+    return;
+  }
+  if (jobGalleryNeedsRefresh(job) && isGenWatchActive(job.id)) {
+    void pollGenerationJob(job.id);
+  }
+  if (jobAwaitingPlanConfirm(job)) {
+    handlePlanPreviewReady(job).catch(() => {
+      syncPlanPreviewInChat(job);
+      setGenProgressUi("策划已完成，请在对话中点击「开始生图」", { running: false, jobId: null });
+      stopGenerationWatch(job.id);
+    });
+    return;
+  }
   const terminal = ["succeeded", "failed", "cancelled"].includes(job.status);
   if (terminal) {
+    const pinBody = primaryGenerationJobBody(job.id);
+    removePlanConfirmActions(pinBody);
+    delete state.planPreviewNotified[job.id];
+    delete state.planConfirmAnchored[job.id];
     if (job.status === "succeeded") {
       setGenProgressUi(formatJobProgress(job), { running: false });
       setTimeout(hideGenProgressIfIdle, 2500);
     } else {
       hideGenProgressIfIdle();
     }
+    resetGenCancelButton();
+    state.focusGenJobId = job.id;
+    clearThreadPrepareScrollTimers();
+    if (state.currentId) {
+      state.genTerminalHandled[job.id] = true;
+      ChatCache.invalidateConversation(state.currentId);
+      const hasDom = !!primaryGenerationJobBody(job.id);
+      if (!hasDom && !shouldBlockThreadFullReload()) {
+        loadConversationDetail(state.currentId, { anchorGenerationJobId: job.id }).catch(() => {});
+      }
+      if (isThreadScrollLocked()) enforceThreadScrollLock();
+    }
+    if (jobGalleryNeedsRefresh(job)) {
+      startGallerySyncPoll(job.id, state.currentId);
+      void finishGenerationWatchWhenReady(job.id);
+    }
     return;
   }
-  setGenProgressUi(formatJobProgress(job), { running: true, jobId: job.id });
+  const active = isJobActivelyGenerating(job);
+  setGenProgressUi(formatJobProgress(job), {
+    running: active,
+    jobId: active ? job.id : null,
+  });
+  if (!active) hideGenProgressIfIdle();
+}
+
+function resetGenCancelButton() {
+  const btn = document.querySelector(".gen-cancel-btn");
+  if (!btn) return;
+  btn.disabled = false;
+  const textEl = btn.querySelector(".gen-cancel-btn-text");
+  if (textEl) textEl.textContent = "停止生图";
 }
 
 async function cancelGenerationJob(jobId) {
   if (!jobId) return null;
+  beginThreadScrollLock(jobId);
+  enforceThreadScrollLock();
   try {
     const job = await api(`/api/generations/${jobId}/cancel/`, { method: "POST", body: "{}" });
     ChatCache.setJob(jobId, job);
-    ChatCache.invalidateConversation(state.currentId);
     stopGenerationWatch(jobId);
     updateJobInChat(job);
     hideGenProgressIfIdle();
-    await loadConversationDetail(state.currentId).catch(() => {});
+    enforceThreadScrollLock();
     return job;
   } catch (err) {
     alert(err.message || "取消失败");
     return null;
+  } finally {
+    resetGenCancelButton();
+    setTimeout(() => {
+      if (Number(state.generationScrollPinJobId) === Number(jobId)) {
+        delete state.confirmingGenJobId;
+        clearThreadScrollLock();
+      }
+    }, 2500);
   }
 }
 
@@ -1464,7 +2486,7 @@ async function pollGenerationJob(jobId) {
   ChatCache.setJob(jobId, job);
   if (!isGenWatchActive(jobId)) return job;
   applyGenerationJobProgress(job);
-  if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+  if (shouldStopGenerationWatch(job)) {
     stopGenerationWatch(jobId);
     hideGenProgressIfIdle();
   }
@@ -1589,13 +2611,202 @@ async function loadPreferences() {
     chat_models: data.chat_models,
     vision_models: data.vision_models,
     image_models: data.image_models,
+    marketplaces: data.marketplaces || [],
+    listing_prompt_presets: data.listing_prompt_presets || [],
+    aspect_ratio_options: data.aspect_ratio_options || [],
     defaults: data.defaults,
   };
   state.chatModel = data.defaults.chat_model;
   state.visionModel = data.defaults.vision_model;
   state.imageModel = data.defaults.image_model;
+  state.marketplaceId = data.defaults.marketplace_id || "tk_shop_mx";
+  let savedAr = "1:1";
+  try {
+    savedAr = localStorage.getItem("ia_aspect_ratio") || data.defaults?.aspect_ratio || "1:1";
+  } catch (_) {
+    savedAr = data.defaults?.aspect_ratio || "1:1";
+  }
+  state.aspectRatio = savedAr;
   populateImageModelSelect();
+  populateMarketplaceSelect();
+  populateAspectRatioSelect();
+  syncMarketplaceToTemplateCount(state.marketplaceId);
+  renderListingPromptPresets();
   updateModelUI();
+}
+
+function populateAspectRatioSelect() {
+  const sel = document.getElementById("aspect-ratio");
+  if (!sel) return;
+  const opts = state.catalog?.aspect_ratio_options || [{ id: "1:1", label_zh: "1:1 方图（默认）" }];
+  sel.innerHTML = "";
+  for (const o of opts) {
+    const opt = document.createElement("option");
+    opt.value = o.id;
+    opt.textContent = o.label_zh || o.id;
+    sel.appendChild(opt);
+  }
+  const want = state.aspectRatio || "1:1";
+  if ([...sel.options].some((o) => o.value === want)) {
+    sel.value = want;
+  } else {
+    sel.value = "1:1";
+    state.aspectRatio = "1:1";
+  }
+}
+
+function syncAspectRatioFromUi() {
+  const sel = document.getElementById("aspect-ratio");
+  if (!sel) return;
+  state.aspectRatio = sel.value || "1:1";
+  try {
+    localStorage.setItem("ia_aspect_ratio", state.aspectRatio);
+  } catch (_) {}
+}
+
+function listingPromptPresets() {
+  return state.catalog?.listing_prompt_presets || [];
+}
+
+function renderListingPromptPresets() {
+  const wrap = document.getElementById("listing-prompt-presets");
+  const chipsEl = document.getElementById("listing-prompt-presets-chips");
+  if (!wrap || !chipsEl) return;
+  const presets = listingPromptPresets();
+  if (!presets.length) {
+    wrap.classList.add("hidden");
+    chipsEl.innerHTML = "";
+    return;
+  }
+  wrap.classList.remove("hidden");
+  chipsEl.innerHTML = "";
+  for (const p of presets) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "listing-prompt-chip";
+    btn.dataset.marketplaceId = p.marketplace_id;
+    btn.title = p.prompt_zh;
+    btn.textContent = p.chip_label || p.marketplace_id;
+    if (state.listingPromptPresetId === p.marketplace_id) {
+      btn.classList.add("is-active");
+    }
+    btn.addEventListener("click", () => applyListingPromptPreset(p.marketplace_id));
+    chipsEl.appendChild(btn);
+  }
+}
+
+function applyListingPromptPreset(marketplaceId) {
+  const preset = listingPromptPresets().find((p) => p.marketplace_id === marketplaceId);
+  if (!preset?.prompt_zh) return;
+  const input = document.getElementById("prompt-input");
+  if (!input) return;
+  const hasText = input.value.trim().length > 0;
+  const switching = state.listingPromptPresetId && state.listingPromptPresetId !== marketplaceId;
+  if (hasText && (switching || input.value.trim() !== preset.prompt_zh.trim())) {
+    const ok = confirm(
+      "将用快捷话术替换输入框内容，并同步投放站点、套图模板与张数，同时勾选「强制套图」。继续？"
+    );
+    if (!ok) return;
+  }
+  input.value = preset.prompt_zh;
+  autoResizeTextarea();
+  state.listingPromptPresetId = marketplaceId;
+  const mSel = document.getElementById("marketplace-id");
+  if (mSel && [...mSel.options].some((o) => o.value === marketplaceId)) {
+    mSel.value = marketplaceId;
+    state.marketplaceId = marketplaceId;
+    syncMarketplaceToTemplateCount(marketplaceId);
+  }
+  const tplSel = document.getElementById("plan-template");
+  if (tplSel && preset.plan_template) {
+    const exists = [...tplSel.options].some((o) => o.value === preset.plan_template);
+    if (exists) tplSel.value = preset.plan_template;
+  }
+  const countSel = document.getElementById("image-count");
+  if (countSel && preset.image_count) {
+    const v = String(preset.image_count);
+    if ([...countSel.options].some((o) => o.value === v)) countSel.value = v;
+  }
+  const genCb = document.getElementById("mode-generate");
+  if (genCb) genCb.checked = true;
+  renderListingPromptPresets();
+  updateSendButton();
+  input.focus();
+}
+
+function populateMarketplaceSelect() {
+  const sel = document.getElementById("marketplace-id");
+  if (!sel) return;
+  const rows = state.catalog?.marketplaces || [];
+  sel.innerHTML = "";
+  for (const m of rows) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = m.label;
+    sel.appendChild(opt);
+  }
+  const def = state.marketplaceId || state.catalog?.defaults?.marketplace_id || "tk_shop_mx";
+  if (def) sel.value = def;
+}
+
+function marketplaceMeta(marketplaceId) {
+  return (state.catalog?.marketplaces || []).find((m) => m.id === marketplaceId) || null;
+}
+
+function syncMarketplaceToTemplateCount(marketplaceId) {
+  const meta = marketplaceMeta(marketplaceId);
+  if (!meta) return;
+  const tplSel = document.getElementById("plan-template");
+  const countSel = document.getElementById("image-count");
+  if (countSel && meta.image_count) {
+    const v = String(meta.image_count);
+    if ([...countSel.options].some((o) => o.value === v)) countSel.value = v;
+  }
+  if (!tplSel) return;
+  if (meta.platform === "amazon") {
+    tplSel.value = "amazon_listing_7";
+  } else if (meta.platform === "tiktok_shop") {
+    tplSel.value = "tk_mx_ecommerce_9";
+  }
+}
+
+async function onMarketplaceChange() {
+  const sel = document.getElementById("marketplace-id");
+  if (!sel) return;
+  state.marketplaceId = sel.value;
+  syncMarketplaceToTemplateCount(sel.value);
+  try {
+    await savePreferences({ marketplace_id: sel.value });
+  } catch (e) {
+    alert(e.message);
+    return;
+  }
+  if (state.currentId) {
+    try {
+      await api(`/api/chat/conversations/${state.currentId}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ marketplace_id: sel.value }),
+      });
+      const row = state.conversations.find((c) => c.id === state.currentId);
+      if (row) row.marketplace_id = sel.value;
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+}
+
+function applyMarketplaceFromConversation(detail) {
+  const sel = document.getElementById("marketplace-id");
+  if (!sel) return;
+  const convMid = (detail?.marketplace_id || "").trim();
+  const mid =
+    convMid ||
+    state.user?.marketplace_id ||
+    state.catalog?.defaults?.marketplace_id ||
+    "tk_shop_mx";
+  state.marketplaceId = mid;
+  sel.value = mid;
+  syncMarketplaceToTemplateCount(mid);
 }
 
 async function savePreferences(patch) {
@@ -1708,8 +2919,129 @@ async function refreshPendingApprovalBadge() {
 }
 
 function closeAdminModal(kind) {
-  const id = kind === "users" ? "admin-users-modal" : "admin-approvals-modal";
+  const id =
+    kind === "users"
+      ? "admin-users-modal"
+      : kind === "usage"
+        ? "admin-usage-modal"
+        : "admin-approvals-modal";
   document.getElementById(id)?.classList.add("hidden");
+}
+
+function localDateInputValue(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function syncAdminUsageToolbarFromState() {
+  const anchor = document.getElementById("admin-usage-anchor");
+  const search = document.getElementById("admin-usage-search");
+  if (anchor) anchor.value = state.adminUsage.anchor || localDateInputValue();
+  if (search) search.value = state.adminUsage.q;
+  document.querySelectorAll(".admin-usage-period-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.usagePeriod === state.adminUsage.period);
+  });
+}
+
+function adminUsageQueryString() {
+  const p = new URLSearchParams();
+  p.set("period", state.adminUsage.period);
+  p.set("page", String(state.adminUsage.page));
+  p.set("page_size", String(state.adminUsage.pageSize));
+  const anchor = (state.adminUsage.anchor || document.getElementById("admin-usage-anchor")?.value || "").trim();
+  if (anchor) p.set("anchor", anchor);
+  if (state.adminUsage.q.trim()) p.set("q", state.adminUsage.q.trim());
+  return p.toString();
+}
+
+function formatUsageModelList(models) {
+  if (!models?.length) return "—";
+  return models
+    .map((m) => `${escapeHtml(m.label || m.model_id)} ×${m.uses}`)
+    .join("<br>");
+}
+
+function updateAdminUsagePaginationUi() {
+  const info = document.getElementById("admin-usage-page-info");
+  const prev = document.getElementById("admin-usage-prev");
+  const next = document.getElementById("admin-usage-next");
+  const { page, totalPages, count } = state.adminUsage;
+  if (info) {
+    info.textContent =
+      totalPages > 1 ? `第 ${page} / ${totalPages} 页 · 共 ${count} 人有记录` : `共 ${count} 人有记录`;
+  }
+  if (prev) prev.disabled = page <= 1;
+  if (next) next.disabled = page >= totalPages;
+}
+
+async function loadAdminUsageStats() {
+  const tbody = document.getElementById("admin-usage-tbody");
+  const emptyEl = document.getElementById("admin-usage-empty");
+  const summaryEl = document.getElementById("admin-usage-summary");
+  const modelsEl = document.getElementById("admin-usage-model-totals");
+  if (!tbody) return;
+
+  const data = await api(`/api/auth/admin/usage-stats/?${adminUsageQueryString()}`);
+  state.adminUsage.page = data.page || 1;
+  state.adminUsage.totalPages = data.total_pages || 1;
+  state.adminUsage.count = data.count || 0;
+
+  const periodLabel =
+    { day: "日", week: "周", month: "月" }[data.period] || data.period;
+  if (summaryEl) {
+    const t = data.totals || {};
+    summaryEl.textContent = [
+      `统计范围（按${periodLabel}）：${data.range_label || "—"}`,
+      `任务 ${t.job_count ?? 0} · 成图 ${t.images_succeeded ?? 0} · 修复 ${t.refine_images ?? 0} · 合计调用 ${t.usage_count ?? 0}`,
+      data.timezone ? `时区 ${data.timezone}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  if (modelsEl) {
+    const chips = (data.model_totals || [])
+      .slice(0, 12)
+      .map(
+        (m) =>
+          `<span class="admin-usage-model-chip">${escapeHtml(m.label || m.model_id)}：成图 ${m.image_generations ?? 0}（任务 ${m.job_count ?? 0}）</span>`
+      )
+      .join("");
+    modelsEl.innerHTML = chips || '<span class="muted">暂无模型用量</span>';
+  }
+
+  tbody.innerHTML = "";
+  const rows = data.results || [];
+  if (!rows.length) {
+    emptyEl?.classList.remove("hidden");
+  } else {
+    emptyEl?.classList.add("hidden");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      const name = row.real_name
+        ? `${escapeHtml(row.real_name)}（${escapeHtml(row.username)}）`
+        : escapeHtml(row.username);
+      tr.innerHTML = `
+        <td class="admin-usage-user"><strong>${name}</strong>${row.is_superuser ? '<span class="admin-status-tag approved">超管</span>' : ""}</td>
+        <td>${row.job_count ?? 0}</td>
+        <td>${row.images_succeeded ?? 0}</td>
+        <td>${row.refine_images ?? 0}</td>
+        <td class="admin-usage-models">${formatUsageModelList(row.image_models)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+  updateAdminUsagePaginationUi();
+}
+
+function openAdminUsageModal() {
+  document.getElementById("user-dropdown")?.classList.add("hidden");
+  document.getElementById("btn-user-menu")?.setAttribute("aria-expanded", "false");
+  if (!state.adminUsage.anchor) state.adminUsage.anchor = localDateInputValue();
+  document.getElementById("admin-usage-modal")?.classList.remove("hidden");
+  syncAdminUsageToolbarFromState();
+  loadAdminUsageStats().catch((e) => alert(e.message));
 }
 
 function openAdminApprovalsModal() {
@@ -1913,6 +3245,14 @@ async function loadUser() {
   if (state.user.default_image_count) {
     countSel.value = String(state.user.default_image_count);
   }
+  if (state.user.marketplace_id) {
+    state.marketplaceId = state.user.marketplace_id;
+    const mSel = document.getElementById("marketplace-id");
+    if (mSel) {
+      mSel.value = state.user.marketplace_id;
+      syncMarketplaceToTemplateCount(state.user.marketplace_id);
+    }
+  }
   updateAdminMenuVisibility();
 }
 
@@ -1960,6 +3300,7 @@ function applyConversationHeader(detail) {
   const title = (detail?.title || "").trim() || "新对话";
   document.title = title === "新对话" ? "AFS GPT" : `${title} · AFS GPT`;
   updateShareChatBanner(detail);
+  applyMarketplaceFromConversation(detail);
 }
 
 function closeShareChatModal() {
@@ -2018,11 +3359,20 @@ function parkCurrentConversation() {
   const box = document.getElementById("messages");
   const scroll = document.getElementById("thread-container");
   jobIdsInThread(box).forEach((jobId) => stopGenerationWatch(jobId));
+  stopGallerySyncPollsForThread(box);
   ChatCache.parkThread(state.currentId, box, scroll);
   hideGenProgressIfIdle();
 }
 
-async function loadConversationDetail(id, { preserveScroll = false } = {}) {
+async function loadConversationDetail(id, { preserveScroll = false, anchorGenerationJobId = null, forceFullRender = false } = {}) {
+  if (shouldBlockThreadFullReload() && state.currentId === id && !forceFullRender) {
+    return ChatCache.getDetail(id)?.detail || null;
+  }
+  const pinJob = isGenerationScrollPinned() ? state.generationScrollPinJobId : null;
+  let anchorId = anchorGenerationJobId || pinJob || state.focusGenJobId || null;
+  if (anchorId || isGenerationScrollPinned()) {
+    preserveScroll = false;
+  }
   const detail = await api(`/api/chat/conversations/${id}/?all_messages=1`);
   detail.messages = sortMessagesForDisplay(detail.messages || []);
   syncMessagePagination(id, detail.message_pagination);
@@ -2034,7 +3384,11 @@ async function loadConversationDetail(id, { preserveScroll = false } = {}) {
   state.currentConvIsShared = Boolean(detail.is_shared || detail.shared_by_label);
   updateShareChatButtonState();
   ChatCache.clearThreadFragment(id);
-  renderMessages(detail.messages || [], { preserveScroll });
+  renderMessages(detail.messages || [], {
+    preserveScroll,
+    anchorGenerationJobId: anchorId,
+    forceFullRender,
+  });
   return detail;
 }
 
@@ -2133,7 +3487,10 @@ async function streamChat(content) {
         await loadConversations();
         const t = payload.message?.content;
         if (t) setMessageContent(textEl, t, "assistant");
-        loadConversationDetail(state.currentId).catch(() => {});
+        const anchor = state.focusGenJobId
+          ? { anchorGenerationJobId: state.focusGenJobId }
+          : {};
+        loadConversationDetail(state.currentId, anchor).catch(() => {});
       } else if (payload.type === "error") {
         body.classList.remove("streaming");
         setMessageContent(textEl, "出错了：" + payload.content, "assistant");
@@ -2145,6 +3502,8 @@ async function streamChat(content) {
 
 function watchGeneration(jobId, convId = state.currentId) {
   if (!convId || convId !== state.currentId) return;
+  delete state.genTerminalHandled[jobId];
+  state.focusGenJobId = jobId;
   const existing = state.genWatchers[jobId];
   if (existing?.convId === convId && !existing.done) return;
 
@@ -2175,13 +3534,16 @@ function watchGeneration(jobId, convId = state.currentId) {
       return;
     }
     if (data.type === "done") {
-      pollGenerationJob(jobId).catch(() => {});
-      stopGenerationWatch(jobId);
+      const cached = ChatCache.getJob(jobId);
+      if (cached && jobGalleryNeedsRefresh(cached)) {
+        startGallerySyncPoll(jobId, convId);
+      }
+      void finishGenerationWatchWhenReady(jobId);
       return;
     }
     if (data.job) {
       applyGenerationJobProgress(data.job);
-      if (["succeeded", "failed", "cancelled"].includes(data.job.status)) {
+      if (shouldStopGenerationWatch(data.job)) {
         stopGenerationWatch(jobId);
       }
     }
@@ -2263,17 +3625,76 @@ function applyRefineFromText(text) {
   if (tplSel) tplSel.value = "photo_refine";
 }
 
+function wantsReferenceGuidedFromText(text) {
+  const t = String(text || "");
+  return (
+    /图\s*[1-4一二三四]\s*是/.test(t) ||
+    (/模仿/.test(t) && /(首图|模特|尺码|参考)/.test(t)) ||
+    /参考图导演|不用.*模板|不走.*九职能/.test(t)
+  );
+}
+
 function applyTemplateFromText(text) {
   const tplSel = document.getElementById("plan-template");
   const countSel = document.getElementById("image-count");
   if (!tplSel) return;
   const t = String(text || "").toLowerCase();
+  if (wantsReferenceGuidedFromText(text)) {
+    tplSel.value = "reference_guided";
+    const n = parseImageCountFromText(text);
+    if (n && countSel) countSel.value = String(n);
+    return;
+  }
   const isTkNine =
     /制作\s*9\s*张|九张|1\+1\+7|tiktok|tk\b|墨西哥|mexico|西语|西班牙语/.test(t) ||
     (/主图/.test(t) && /白底/.test(t) && /详情/.test(t));
   if (!isTkNine) return;
   tplSel.value = "tk_mx_ecommerce_9";
   if (countSel) countSel.value = "9";
+}
+
+async function confirmGenerationPlan(jobId) {
+  const body = primaryGenerationJobBody(jobId) || document.querySelector(`[data-generation-job="${jobId}"]`);
+  removePlanConfirmActions(body);
+  document.querySelectorAll(`[data-generation-job="${jobId}"] .gen-plan-actions`).forEach((el) => el.remove());
+  delete state.planPreviewNotified[jobId];
+  delete state.planConfirmAnchored[jobId];
+  state.genFollowScrollJobId = jobId;
+  clearThreadPrepareScrollTimers();
+  beginThreadScrollLock(jobId, { markConfirming: true });
+  const textEl = body?.querySelector(".msg-text");
+  if (textEl) {
+    setMessageContent(textEl, "已确认策划，正在排队/生图…", "assistant");
+  }
+  enforceThreadScrollLock();
+  try {
+    await api(`/api/generations/${jobId}/confirm-run/`, { method: "POST", body: "{}" });
+    let job = null;
+    try {
+      job = await api(`/api/generations/${jobId}/`);
+      ChatCache.setJob(jobId, job);
+      updateJobInChat(job);
+    } catch (_) {
+      /* ignore */
+    }
+    enforceThreadScrollLock();
+    watchGeneration(jobId, state.currentId);
+    ChatCache.setJob(jobId, job || ChatCache.getJob(jobId));
+  } finally {
+    enforceThreadScrollLock();
+    requestAnimationFrame(enforceThreadScrollLock);
+  }
+}
+
+async function reoptimizeGenerationPlan(jobId) {
+  await api(`/api/generations/${jobId}/restrategy/`, {
+    method: "POST",
+    body: JSON.stringify({ regenerate_images: false }),
+  });
+  if (state.currentId) {
+    ChatCache.invalidateConversation(state.currentId);
+    await loadConversationDetail(state.currentId);
+  }
 }
 
 async function startGeneration(prompt) {
@@ -2286,6 +3707,7 @@ async function startGeneration(prompt) {
     localStorage.setItem("ia_cast_skin_preset", castSkin);
   } catch (_) {}
 
+  syncAspectRatioFromUi();
   const payload = {
     prompt,
     image_count: imageCount,
@@ -2293,10 +3715,15 @@ async function startGeneration(prompt) {
     image_model: state.imageModel || document.getElementById("image-model").value,
     vision_model: state.visionModel,
     plan_template: planTemplate,
+    marketplace_id: document.getElementById("marketplace-id")?.value || state.marketplaceId,
     cast_skin_preset: castSkin,
+    aspect_ratio: state.aspectRatio || "1:1",
   };
   const attIds = state.attachments.map((a) => a.id);
   if (attIds.length) payload.attachment_ids = attIds;
+  if (document.getElementById("plan-preview-first")?.checked) {
+    payload.plan_preview_only = true;
+  }
 
   const imageModelId =
     state.imageModel || document.getElementById("image-model")?.value || "";
@@ -2305,16 +3732,37 @@ async function startGeneration(prompt) {
     submitMsg = `正在提交套图任务（生图模型：${modelLabel(state.catalog?.image_models, imageModelId) || imageModelId}）…`;
   }
   setGenProgressUi(submitMsg, { running: true });
+  preserveThreadScroll(1500);
+  enforceThreadScrollLock();
 
   const job = await api("/api/generations/", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 
-  ChatCache.invalidateConversation(state.currentId);
-  await loadConversationDetail(state.currentId);
-  if (job.id) watchGeneration(job.id, state.currentId);
+  const userMsg = job.user_message;
+  const assistantMsg = job.assistant_message;
+  if (userMsg) syncServerUserMessage(userMsg);
+  if (assistantMsg) {
+    const existingAsst = assistantMsg.id
+      ? document.querySelector(`[data-message-id="${assistantMsg.id}"]`)
+      : null;
+    if (!existingAsst) appendMessageDom(assistantMsg, false);
+  }
+  mergeServerMessagesIntoCache(state.currentId, userMsg, assistantMsg);
+  enforceThreadScrollLock();
+
+  if (job.id) {
+    beginThreadScrollLock(job.id, { markConfirming: false });
+    const jobRow = { ...job };
+    delete jobRow.user_message;
+    delete jobRow.assistant_message;
+    delete jobRow.dispatch;
+    ChatCache.setJob(job.id, jobRow);
+    watchGeneration(job.id, state.currentId);
+  }
   await loadConversations();
+  enforceThreadScrollLock();
   if (job.image_model && isJobRunning(job)) {
     const progressText =
       formatJobProgress(job) +
@@ -2375,7 +3823,7 @@ async function sendMessage() {
           name: a.name,
         })),
       };
-      appendMessageDom({ role: "user", content: text, metadata: genMeta });
+      appendMessageDom({ role: "user", content: text, metadata: genMeta }, true);
       await startGeneration(text);
       clearAttachment();
     } else {
@@ -2554,7 +4002,8 @@ function toggleUserMenu() {
   document.getElementById("btn-user-menu").setAttribute("aria-expanded", String(!open));
 }
 
-document.getElementById("thread-container")?.addEventListener(
+const threadScrollEl = document.getElementById("thread-container");
+threadScrollEl?.addEventListener(
   "scroll",
   () => {
     clearTimeout(state._scrollLoadOlderTimer);
@@ -2562,9 +4011,17 @@ document.getElementById("thread-container")?.addEventListener(
   },
   { passive: true }
 );
+for (const ev of ["wheel", "touchstart", "pointerdown"]) {
+  threadScrollEl?.addEventListener(ev, releaseThreadScrollLockFromUser, { passive: true });
+}
 
 document.getElementById("btn-send").onclick = () => sendMessage().catch(alert);
 document.getElementById("prompt-input").addEventListener("input", () => {
+  const presets = listingPromptPresets();
+  const text = document.getElementById("prompt-input")?.value.trim() || "";
+  const match = presets.find((p) => p.prompt_zh.trim() === text);
+  state.listingPromptPresetId = match ? match.marketplace_id : null;
+  renderListingPromptPresets();
   autoResizeTextarea();
   updateSendButton();
 });
@@ -2590,6 +4047,89 @@ document.getElementById("btn-admin-users")?.addEventListener("click", (e) => {
   e.stopPropagation();
   openAdminUsersModal();
 });
+document.getElementById("btn-admin-usage")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openAdminUsageModal();
+});
+document.querySelectorAll(".admin-usage-period-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    state.adminUsage.period = btn.dataset.usagePeriod || "day";
+    state.adminUsage.page = 1;
+    syncAdminUsageToolbarFromState();
+    loadAdminUsageStats().catch((err) => alert(err.message));
+  });
+});
+document.getElementById("admin-usage-anchor")?.addEventListener("change", (e) => {
+  state.adminUsage.anchor = e.target.value;
+  state.adminUsage.page = 1;
+  loadAdminUsageStats().catch((err) => alert(err.message));
+});
+document.getElementById("admin-usage-search")?.addEventListener("input", (e) => {
+  state.adminUsage.q = e.target.value;
+  state.adminUsage.page = 1;
+  if (state.adminUsageSearchTimer) clearTimeout(state.adminUsageSearchTimer);
+  state.adminUsageSearchTimer = setTimeout(() => {
+    loadAdminUsageStats().catch((err) => alert(err.message));
+  }, 350);
+});
+document.getElementById("admin-usage-prev")?.addEventListener("click", () => {
+  if (state.adminUsage.page <= 1) return;
+  state.adminUsage.page -= 1;
+  loadAdminUsageStats().catch((err) => alert(err.message));
+});
+document.getElementById("admin-usage-next")?.addEventListener("click", () => {
+  if (state.adminUsage.page >= state.adminUsage.totalPages) return;
+  state.adminUsage.page += 1;
+  loadAdminUsageStats().catch((err) => alert(err.message));
+});
+function closeDocsDropdown() {
+  const dd = document.getElementById("topbar-docs-dropdown");
+  const btn = document.getElementById("btn-docs-literature");
+  dd?.classList.add("hidden");
+  btn?.setAttribute("aria-expanded", "false");
+}
+
+function toggleDocsDropdown() {
+  const dd = document.getElementById("topbar-docs-dropdown");
+  const btn = document.getElementById("btn-docs-literature");
+  if (!dd || !btn) return;
+  const open = dd.classList.contains("hidden");
+  if (open) {
+    dd.classList.remove("hidden");
+    btn.setAttribute("aria-expanded", "true");
+  } else {
+    closeDocsDropdown();
+  }
+}
+
+function openDocsModal(kind) {
+  closeDocsDropdown();
+  const id = kind === "usage" ? "docs-usage-modal" : "docs-templates-modal";
+  document.getElementById(id)?.classList.remove("hidden");
+}
+
+function closeDocsModal(kind) {
+  const id = kind === "usage" ? "docs-usage-modal" : "docs-templates-modal";
+  document.getElementById(id)?.classList.add("hidden");
+}
+
+document.getElementById("btn-docs-literature")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleDocsDropdown();
+});
+
+document.getElementById("btn-docs-usage")?.addEventListener("click", () => openDocsModal("usage"));
+document.getElementById("btn-docs-templates")?.addEventListener("click", () => openDocsModal("templates"));
+
+document.getElementById("topbar-docs-wrap")?.addEventListener("click", (e) => e.stopPropagation());
+
+document.querySelectorAll("[data-docs-close]").forEach((el) => {
+  el.addEventListener("click", () => {
+    const kind = el.getAttribute("data-docs-close");
+    if (kind) closeDocsModal(kind);
+  });
+});
+
 document.getElementById("btn-share-chat")?.addEventListener("click", () => openShareChatModal());
 document.querySelectorAll("[data-share-close]").forEach((el) => {
   el.addEventListener("click", closeShareChatModal);
@@ -2660,6 +4200,7 @@ document.addEventListener("click", () => {
   document.getElementById("user-dropdown").classList.add("hidden");
   document.getElementById("btn-user-menu").setAttribute("aria-expanded", "false");
   closeModelPicker();
+  closeDocsDropdown();
   closeAllConvMenus();
 });
 document.getElementById("btn-sidebar-open").onclick = openSidebarFromCollapsed;
@@ -2674,6 +4215,7 @@ document.getElementById("conv-search-input")?.addEventListener("input", (e) => {
   renderConvList();
 });
 document.getElementById("btn-tools").onclick = toggleToolsPanel;
+document.getElementById("aspect-ratio")?.addEventListener("change", syncAspectRatioFromUi);
 document.getElementById("model-selector").onclick = toggleModelPicker;
 document.getElementById("model-picker-wrap")?.addEventListener("click", (e) => e.stopPropagation());
 document.getElementById("image-model")?.addEventListener("change", (e) => {
@@ -2696,6 +4238,41 @@ document.getElementById("lightbox-img")?.addEventListener("click", (e) => {
   e.stopPropagation();
   const stage = e.currentTarget.closest(".lightbox-preview-stage");
   if (stage) stage.classList.toggle("is-zoomed");
+});
+document.getElementById("lightbox-refine-upload-btn")?.addEventListener("click", () => {
+  document.getElementById("lightbox-refine-upload-input")?.click();
+});
+document.getElementById("lightbox-refine-use-upload")?.addEventListener("change", (e) => {
+  const on = e.target.checked;
+  const wrap = document.getElementById("lightbox-refine-upload-wrap");
+  if (on) wrap?.classList.remove("hidden");
+  else {
+    wrap?.classList.add("hidden");
+    const preview = document.getElementById("lightbox-refine-upload-preview");
+    preview?.classList.add("hidden");
+    state.lightboxRefineUpload = null;
+    const input = document.getElementById("lightbox-refine-upload-input");
+    if (input) input.value = "";
+  }
+  syncLightboxRefineHint();
+});
+document.getElementById("lightbox-refine-upload-input")?.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  setLightboxRefineStatus("正在上传参考图…");
+  try {
+    await uploadLightboxRefineReference(file);
+    setLightboxRefineStatus("");
+  } catch (err) {
+    setLightboxRefineStatus(err.message || "上传失败", true);
+    state.lightboxRefineUpload = null;
+  }
+});
+document.getElementById("lightbox-refine-upload-clear")?.addEventListener("click", () => {
+  state.lightboxRefineUpload = null;
+  document.getElementById("lightbox-refine-upload-preview")?.classList.add("hidden");
+  const input = document.getElementById("lightbox-refine-upload-input");
+  if (input) input.value = "";
 });
 document.getElementById("lightbox-refine-submit")?.addEventListener("click", () => {
   submitLightboxRefine().catch((e) => setLightboxRefineStatus(e.message, true));
@@ -2757,6 +4334,19 @@ document.querySelector(".gen-cancel-btn")?.addEventListener("click", (e) => {
   await ensureCsrf();
   await loadPreferences();
   await loadUser();
+  try {
+    const previewFirst = localStorage.getItem("ia_plan_preview_first");
+    const previewCb = document.getElementById("plan-preview-first");
+    if (previewCb && previewFirst === "1") previewCb.checked = true;
+    previewCb?.addEventListener("change", () => {
+      try {
+        localStorage.setItem("ia_plan_preview_first", previewCb.checked ? "1" : "0");
+      } catch (_) {}
+    });
+  } catch (_) {}
+  document.getElementById("marketplace-id")?.addEventListener("change", () => {
+    onMarketplaceChange().catch((e) => alert(e.message));
+  });
   try {
     const savedSkin = localStorage.getItem("ia_cast_skin_preset");
     if (savedSkin && ["caucasian", "diverse", "black_only"].includes(savedSkin)) {

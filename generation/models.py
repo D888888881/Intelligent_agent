@@ -109,6 +109,22 @@ class SlotRefineCandidate(models.Model):
     )
     prompt = models.TextField()
     image_model = models.CharField(max_length=64, blank=True, default="")
+    class ReferenceMode(models.TextChoices):
+        DUAL = "dual", "商品原图+当前成图"
+        UPLOAD_ONLY = "upload_only", "仅新上传参考"
+
+    reference_mode = models.CharField(
+        max_length=20,
+        choices=ReferenceMode.choices,
+        default=ReferenceMode.DUAL,
+    )
+    reference_attachment = models.ForeignKey(
+        "uploads.Attachment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="slot_refine_candidates",
+    )
     status = models.CharField(
         max_length=20,
         choices=Status.choices,

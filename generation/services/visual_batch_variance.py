@@ -12,25 +12,14 @@ from generation.services.shot_diversity_constants import (
     FIXED_FRAME_ROLES,
 )
 
-_BEAUTY_KW = re.compile(
-    r"(mud\s*mask|clay\s*mask|mud\s*stick|face\s*mask|stick|acne\s*patch|pimple\s*patch|"
-    r"hydrocolloid|skincare|serum|cleanser|toner|moisturizer|sunscreen|"
-    r"泥膜|泥膜棒|面膜|痘痘贴|痘贴|护肤|精华|洁面|水乳|防晒|美妆)",
-    re.I,
+from generation.services.beauty_personal_care import (
+    BEAUTY_PERSONAL_CARE_PATTERN as _BEAUTY_KW,
+    plan_uses_beauty_action_pool,
 )
 
 
 def is_beauty_skincare_plan(plan: dict) -> bool:
-    analysis = plan.get("product_analysis") or {}
-    blob = " ".join(
-        [
-            str(analysis.get("category") or ""),
-            str(analysis.get("product_name_en") or ""),
-            str(analysis.get("primary_function") or ""),
-            str(plan.get("user_prompt") or ""),
-        ]
-    )
-    return bool(_BEAUTY_KW.search(blob))
+    return plan_uses_beauty_action_pool(plan)
 
 # 每套包：五张创意详情 + 主图是否出人 + 命名（写入 plan 供下一批避让）
 _BEAUTY_BATCH_PACKS: list[dict] = [
@@ -50,24 +39,24 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
                 "camera_short": "wide env back-left",
             },
             6: {
-                "action_code": "trust_stick_texture",
-                "density": "minimal",
+                "action_code": "trust_bathroom_vanity",
+                "density": "balanced",
                 "human": "none",
                 "action_en": (
-                    "Product-only macro: mud stick tip texture, swirl on glass palette, clinical white surface. "
-                    "No face, no hands applying."
+                    "Bright Mexican bathroom vanity — SKU on marble shelf beside folded towel and plant; "
+                    "steam-soft window light, clean premium routine vibe; product hero, no face."
                 ),
-                "camera_short": "macro 30° product",
+                "camera_short": "wide env 3/4",
             },
             7: {
-                "action_code": "usage_stick_cheek_swipe",
+                "action_code": "social_vanity_grwm",
                 "density": "balanced",
-                "human": "hands",
+                "human": "full",
                 "action_en": (
-                    "Single action: glide stick directly on cheek in one stroke; other hand holds hair back. "
-                    "Side angle 45°, not front mirror duplicate of frame 3."
+                    "Young Latina creator at bright vanity — mid-routine applying stick on cheek, soft smile, "
+                    "phone-on-stand bokeh optional; TikTok GRWM authenticity; half-body 3/4; not frame-3 clutter still."
                 ),
-                "camera_short": "table 3/4 side apply",
+                "camera_short": "wide lifestyle 3/4",
             },
             8: {
                 "action_code": "value_marble_flatlay",
@@ -106,20 +95,22 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
                 "camera_short": "wide env back-left",
             },
             6: {
-                "action_code": "trust_cross_section",
-                "density": "minimal",
+                "action_code": "trust_kitchen_counter",
+                "density": "balanced",
                 "human": "none",
                 "action_en": (
-                    "Minimal cutaway-style clay core close-up on neutral gray; scientific trust, no bathroom."
+                    "Sunny kitchen counter — product beside ceramic mug and fruit bowl, tiled backsplash "
+                    "typical of Mexico City home; morning light, trustworthy daily-use context."
                 ),
-                "camera_short": "macro label corner alt",
+                "camera_short": "wide env back-left",
             },
             7: {
-                "action_code": "usage_twist_open",
+                "action_code": "social_desk_creator",
                 "density": "balanced",
-                "human": "hands",
+                "human": "full",
                 "action_en": (
-                    "Hands twist-open stick cap on plain desk — show mechanism, NOT on-face application."
+                    "Creator at home desk with ring-light off — candid unboxing then first use toward camera; "
+                    "casual Mexico City apartment, natural window light, relatable eye contact; product in hand."
                 ),
                 "camera_short": "elevated 3/4 front-left",
             },
@@ -159,22 +150,24 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
                 "camera_short": "macro skin crop",
             },
             6: {
-                "action_code": "trust_ingredient_icons",
-                "density": "minimal",
+                "action_code": "trust_bedroom_nightstand",
+                "density": "balanced",
                 "human": "none",
                 "action_en": (
-                    "Clean graphic-minimal shelf shot: stick plus 3 ingredient callout cards, lots of whitespace."
+                    "Calm bedroom nightstand — product with book, lamp glow, linen texture; "
+                    "evening wind-down trust scene, warm intimate, no portrait."
                 ),
-                "camera_short": "front catalog variant",
+                "camera_short": "wide lifestyle indoor",
             },
             7: {
-                "action_code": "usage_spot_dab",
+                "action_code": "social_friend_pov",
                 "density": "balanced",
-                "human": "hands",
+                "human": "full",
                 "action_en": (
-                    "Finger dabs product from stick onto one small spot — patch-test gesture, not full-face mask."
+                    "Friend-POV over-shoulder: model applies product laughing in kitchen breakfast nook; "
+                    "imperfect framing, TikTok phone-capture feel; waist-up, SKU visible, warm morning light."
                 ),
-                "camera_short": "table 3/4 opposite frame1",
+                "camera_short": "wide lifestyle 3/4",
             },
             8: {
                 "action_code": "value_retail_shelf",
@@ -211,22 +204,24 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
                 "camera_short": "env 3/4 back-left",
             },
             6: {
-                "action_code": "trust_seal_cert",
-                "density": "minimal",
+                "action_code": "trust_home_living",
+                "density": "balanced",
                 "human": "none",
                 "action_en": (
-                    "Packaging back label / certification zone macro, cool neutral light."
+                    "Family living room coffee table — SKU among remote, coaster, sunlight through curtains; "
+                    "relatable Mexican home comfort, product sharp in foreground."
                 ),
-                "camera_short": "macro side",
+                "camera_short": "wide env 3/4",
             },
             7: {
-                "action_code": "usage_forehead_glide",
+                "action_code": "social_evening_routine",
                 "density": "balanced",
-                "human": "hands",
+                "human": "full",
                 "action_en": (
-                    "Glide stick across forehead line — different body zone than cheek demo packs."
+                    "Evening skincare moment — woman in robe at vanity lamp, applying product calmly; "
+                    "cozy intimate TikTok vibe, side profile showing face + product; not the frame-3 still-life."
                 ),
-                "camera_short": "elevated 3/4 front-left",
+                "camera_short": "wide lifestyle indoor",
             },
             8: {
                 "action_code": "value_gift_box",
@@ -262,22 +257,24 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
                 "camera_short": "low 3/4 front-right",
             },
             6: {
-                "action_code": "trust_weight_size",
-                "density": "minimal",
+                "action_code": "trust_street_or_office",
+                "density": "balanced",
                 "human": "none",
                 "action_en": (
-                    "Stick beside ruler/coin for size reference — infographic minimalism."
+                    "Alternate batch: outdoor street café table OR tidy home-office desk with laptop edge — "
+                    "urban Mexico daylight, product ready-for-day trust; no full-face model."
                 ),
-                "camera_short": "side profile 90°",
+                "camera_short": "wide lifestyle outdoor",
             },
             7: {
-                "action_code": "usage_double_hand_cap",
+                "action_code": "social_urban_outdoor",
                 "density": "balanced",
-                "human": "hands",
+                "human": "full",
                 "action_en": (
-                    "Both hands uncap stick over sink — preparatory step only, no face in frame."
+                    "Outdoor Mexico urban sidewalk — creator uses product before going out, golden hour, "
+                    "streetwear casual, dynamic 3/4 walking pause; authentic TikTok street seeding, not studio."
                 ),
-                "camera_short": "table level 3/4",
+                "camera_short": "wide lifestyle outdoor",
             },
             8: {
                 "action_code": "value_family_multi",
@@ -301,24 +298,262 @@ _BEAUTY_BATCH_PACKS: list[dict] = [
     },
 ]
 
+def _generic_frame(
+    action_code: str,
+    action_en: str,
+    *,
+    camera_short: str = "",
+    density: str = "balanced",
+    human: str = "none",
+) -> dict:
+    return {
+        "action_code": action_code,
+        "action_en": action_en,
+        "camera_short": camera_short,
+        "density": density,
+        "human": human,
+    }
+
+
 _GENERIC_BATCH_PACKS: list[dict] = [
     {
-        "name": "generic_pack_a",
+        "name": "theme_studio_editorial",
+        "story_theme_en": (
+            "STORY THEME — Cool studio editorial: crisp side light, graphite/slate props, "
+            "Mexico City design-apartment mood; rational buyer — quality and specs first."
+        ),
+        "color_mood_en": "cool neutrals, silver highlights",
         "hero_human": False,
         "human_budget_override": {"max_face_frames": 1, "max_human_touch_frames": 2},
-        "frames": {},
+        "frames": {
+            3: _generic_frame(
+                "studio_benefit_still",
+                "Studio still — solved pain via neat organization and premium material cues; cool gradient backdrop.",
+                camera_short="wide env back-left",
+            ),
+            6: _generic_frame(
+                "trust_desk_setup",
+                "Home office desk trust: product beside laptop and plant; tidy executive daily use.",
+                camera_short="wide env shelf",
+            ),
+            7: _generic_frame(
+                "social_creator_desk",
+                "Creator at desk unboxing — candid TikTok vibe, natural window light, half-body.",
+                human="full",
+                camera_short="elevated 3/4 front-left",
+            ),
+            8: _generic_frame(
+                "value_studio_flatlay",
+                "Studio flat lay on concrete — kit items grid, qty labels, no person.",
+                camera_short="90° top-down kit",
+                density="rich",
+            ),
+            9: _generic_frame(
+                "payoff_window_minimal",
+                "Minimal window sill payoff — product + mug, soft morning glow, zero people.",
+                camera_short="wide lifestyle window",
+                density="minimal",
+            ),
+        },
     },
     {
-        "name": "generic_pack_b",
+        "name": "theme_warm_home",
+        "story_theme_en": (
+            "STORY THEME — Warm Mexican home: terracotta, woven textiles, golden indoor light; "
+            "family routine narrative — comfort, trust, daily ritual."
+        ),
+        "color_mood_en": "warm beige, terracotta, soft gold",
+        "hero_human": False,
+        "human_budget_override": {"max_face_frames": 1, "max_human_touch_frames": 2},
+        "frames": {
+            3: _generic_frame(
+                "home_pain_relief",
+                "Living room side table — before/after metaphor via lighting only; cozy sofa bokeh.",
+                camera_short="low 3/4 front-right",
+            ),
+            6: _generic_frame(
+                "trust_bedroom_dresser",
+                "Bedroom dresser trust scene — folded linens, candle, product centered.",
+                camera_short="wide lifestyle indoor",
+            ),
+            7: _generic_frame(
+                "social_family_couch",
+                "Young adult on couch mid-use — warm lamp light, relatable Latina/Latino, product in hand.",
+                human="full",
+                camera_short="wide lifestyle 3/4",
+            ),
+            8: _generic_frame(
+                "value_basket_kit",
+                "Woven basket kit spread — angled shelf, gift-worthy styling.",
+                camera_short="wide env shelf",
+                density="rich",
+            ),
+            9: _generic_frame(
+                "payoff_balcony_sunset",
+                "Balcony sunset — product on railing, city glow, aspirational calm.",
+                camera_short="wide lifestyle outdoor",
+                density="minimal",
+            ),
+        },
+    },
+    {
+        "name": "theme_outdoor_urban",
+        "story_theme_en": (
+            "STORY THEME — Outdoor urban Mexico: street café, park bench, sidewalk energy; "
+            "active lifestyle buyer — portability, freshness, on-the-go."
+        ),
+        "color_mood_en": "natural greens, concrete, sun flare",
         "hero_human": False,
         "human_budget_override": {"max_face_frames": 0, "max_human_touch_frames": 1},
-        "frames": {},
+        "frames": {
+            3: _generic_frame(
+                "outdoor_problem_solved",
+                "Park bench scene — benefit solved outdoors; product with tote and sunglasses props.",
+                camera_short="wide lifestyle outdoor",
+            ),
+            6: _generic_frame(
+                "trust_cafe_table",
+                "Street café table — product beside coffee cup; Mexico City sidewalk bokeh.",
+                camera_short="wide env 3/4",
+            ),
+            7: _generic_frame(
+                "social_park_walk",
+                "Consumer walking in park holding product — candid 3/4, no studio.",
+                human="full",
+                camera_short="wide lifestyle outdoor",
+            ),
+            8: _generic_frame(
+                "value_backpack_spread",
+                "Backpack spill flatlay on grass — travel kit narrative.",
+                camera_short="top-down 90°",
+                density="rich",
+            ),
+            9: _generic_frame(
+                "payoff_rooftop",
+                "Rooftop golden hour — product silhouette + city skyline.",
+                camera_short="wide back-right",
+                density="minimal",
+            ),
+        },
     },
     {
-        "name": "generic_pack_c",
+        "name": "theme_premium_gift",
+        "story_theme_en": (
+            "STORY THEME — Premium gift / gifting moment: marble, ribbon, soft box light; "
+            "buyer motivation — present for family, perceived value, unboxing delight."
+        ),
+        "color_mood_en": "ivory marble, soft rose gold accents",
         "hero_human": False,
+        "human_budget_override": {"max_face_frames": 1, "max_human_touch_frames": 2},
+        "frames": {
+            3: _generic_frame(
+                "gift_detail_macro",
+                "Ribbon + packaging detail macro — craft texture, premium materials.",
+                camera_short="macro skin crop",
+                density="minimal",
+            ),
+            6: _generic_frame(
+                "trust_entry_console",
+                "Entry console gift-ready styling — mirror, plant, product as centerpiece.",
+                camera_short="elevated 3/4 front-left",
+            ),
+            7: _generic_frame(
+                "social_gift_exchange",
+                "Hands passing gift box — warm smile crop, no stiff studio; product visible.",
+                human="hands",
+                camera_short="table-level 3/4 front-left",
+            ),
+            8: _generic_frame(
+                "value_marble_unbox",
+                "Marble unboxing spread — all kit pieces, premium flat lay.",
+                camera_short="90° top-down kit",
+                density="rich",
+            ),
+            9: _generic_frame(
+                "payoff_fireplace_glow",
+                "Fireplace / warm interior glow — product on side table, holiday mood.",
+                camera_short="wide lifestyle indoor",
+            ),
+        },
+    },
+    {
+        "name": "theme_minimal_scandi",
+        "story_theme_en": (
+            "STORY THEME — Minimal Scandi-meets-LATAM: white wood, negative space, calm; "
+            "story of simplicity, less clutter, honest product."
+        ),
+        "color_mood_en": "white oak, pale sage, airy",
+        "hero_human": False,
+        "human_budget_override": {"max_face_frames": 0, "max_human_touch_frames": 1},
+        "frames": {
+            3: _generic_frame(
+                "minimal_benefit_space",
+                "Sparse shelf — one hero SKU, single plant; benefit = space saving.",
+                camera_short="env 3/4 back-left",
+                density="minimal",
+            ),
+            6: _generic_frame(
+                "trust_minimal_bath",
+                "Minimal bathroom niche — white tile, single towel, product only.",
+                camera_short="wide env 3/4",
+            ),
+            7: _generic_frame(
+                "social_hands_apply",
+                "Hands-only ritual — clean nails, soft light, no face; TikTok macro tutorial feel.",
+                human="hands",
+                camera_short="macro skin crop",
+            ),
+            8: _generic_frame(
+                "value_lineup_shelf",
+                "Linear shelf lineup — qty emphasis, no clutter.",
+                camera_short="wide env shelf",
+            ),
+            9: _generic_frame(
+                "payoff_white_curtain",
+                "Sheer curtain backlight — product silhouette, zen payoff.",
+                camera_short="wide lifestyle window",
+                density="minimal",
+            ),
+        },
+    },
+    {
+        "name": "theme_bold_color_pop",
+        "story_theme_en": (
+            "STORY THEME — Bold color-pop retail: saturated backdrops, playful props, youth energy; "
+            "impulse TikTok shopper — fun, contrast, scroll-stop patterns."
+        ),
+        "color_mood_en": "cobalt, coral, high saturation",
+        "hero_human": True,
         "human_budget_override": {"max_face_frames": 2, "max_human_touch_frames": 3},
-        "frames": {},
+        "frames": {
+            3: _generic_frame(
+                "pop_benefit_props",
+                "Color-block backdrop — exaggerated props showing benefit; playful shadows.",
+                camera_short="dutch tilt 3/4 front",
+            ),
+            6: _generic_frame(
+                "trust_color_kitchen",
+                "Bright painted kitchen — tiles + product; authentic Mexico home color.",
+                camera_short="low 3/4 front-right",
+            ),
+            7: _generic_frame(
+                "social_dance_hold",
+                "Creator holding product mid-movement — motion blur background, energetic TikTok.",
+                human="full",
+                camera_short="ugc phone capture height",
+            ),
+            8: _generic_frame(
+                "value_color_grid",
+                "Colorful grid flat lay — stickers, qty, gifts on solid hue surface.",
+                camera_short="top-down 90°",
+                density="rich",
+            ),
+            9: _generic_frame(
+                "payoff_neon_night",
+                "Neon-accent night shelf — product pop against dark wall.",
+                camera_short="night city bokeh",
+            ),
+        },
     },
 ]
 
@@ -335,6 +570,22 @@ _CAMERA_ALT_ORIENTATION: dict[str, str] = {
     "elevated 3/4 front-left": (
         "Camera 45° above, front-left quarter; asymmetric product placement."
     ),
+    "wide env back-left": (
+        "Wide environmental from back-left quarter; product partly turned from front."
+    ),
+    "90° top-down kit": "Strict 90° bird's-eye kit layout on textured surface.",
+    "wide lifestyle window": "Window-side lifestyle; soft backlight; product on sill or table.",
+    "low 3/4 front-right": "Low knee-height 3/4 from front-right; dramatic product depth.",
+    "wide lifestyle indoor": "28mm indoor lifestyle; natural window light; lived-in Mexico home.",
+    "wide lifestyle 3/4": "Three-quarter lifestyle portrait distance; product in active context.",
+    "wide back-right": "Wide from back-right quarter; product in lower third; deep background.",
+    "top-down 90°": "Top-down 90° flat lay — only when mandated for this frame batch.",
+    "wide env 3/4": "Chest-height wide 3/4 environmental product-in-scene.",
+    "env 3/4 back-left": "Environmental back-left 3/4; asymmetric props.",
+    "table-level 3/4 front-left": "Table-height 3/4 from front-left; usage props on same plane.",
+    "dutch tilt 3/4 front": "Slight dutch angle 3/4 from front; dynamic editorial energy.",
+    "ugc phone capture height": "Handheld phone height ~1.1m; candid off-center TikTok framing.",
+    "night city bokeh": "Night urban bokeh; product sharp foreground.",
 }
 
 
@@ -377,10 +628,9 @@ def product_fingerprint(job, *, product_analysis: dict | None = None) -> str:
     product_key = _analysis_product_key(analysis)
     prompt_key = _normalize_prompt_for_fingerprint(job.prompt)
     uid = int(job.user_id or 0)
+    brief_tail = f"|brief:{prompt_key}" if prompt_key else ""
     if product_key:
-        key = f"u{uid}|sku:{product_key}"
-    elif prompt_key and len(prompt_key) >= 36:
-        key = f"u{uid}|brief:{prompt_key}"
+        key = f"u{uid}|sku:{product_key}{brief_tail}"
     elif prompt_key:
         key = f"u{uid}|brief:{prompt_key}"
     else:
@@ -396,7 +646,7 @@ def product_fingerprint(job, *, product_analysis: dict | None = None) -> str:
 
 
 def resolve_visual_batch_index(job, *, product_analysis: dict | None = None) -> int:
-    """同一用户 + 同一 SKU/brief 指纹下，第几次成功/进行中的套图任务。"""
+    """同一用户 + 同一 SKU/brief 指纹下，第几次套图任务（含已策划过的任务）。"""
     from generation.models import GenerationJob
 
     fp = product_fingerprint(job, product_analysis=product_analysis)
@@ -409,12 +659,14 @@ def resolve_visual_batch_index(job, *, product_analysis: dict | None = None) -> 
     for j in qs[:80]:
         if product_fingerprint(j) != fp:
             continue
-        if j.status in (
-            GenerationJob.Status.SUCCEEDED,
-            GenerationJob.Status.RUNNING,
-            GenerationJob.Status.QUEUED,
-        ):
-            count += 1
+        if j.status == GenerationJob.Status.CANCELLED:
+            continue
+        plan = j.plan_json or {}
+        from generation.services.listing_bundle import LISTING_PLAN_TEMPLATES
+
+        if not (plan.get("shots") or plan.get("plan_template") in LISTING_PLAN_TEMPLATES):
+            continue
+        count += 1
     return count
 
 
@@ -435,13 +687,20 @@ def _load_previous_plan_summary(job, *, product_analysis: dict | None = None) ->
             continue
         plan = j.plan_json or {}
         name = plan.get("visual_batch_pack_name") or "unknown"
+        theme = (plan.get("listing_story_theme_en") or "")[:400]
         roster = plan.get("detail_action_roster") or {}
+        cam = plan.get("camera_roster") or {}
         human = plan.get("human_presence_summary") or ""
+        v3 = plan.get("frame3_variant_id") or "?"
+        v5 = plan.get("frame5_variant_id") or "?"
+        cam_preset = plan.get("camera_batch_preset_id") or "?"
         return (
-            f"MANDATORY — Previous listing batch #{j.id} used visual pack '{name}'. "
-            f"Actions were {roster}. Human presence pattern: {human}. "
-            "This batch MUST use different poses, layouts, camera distances, and human/no-human mix. "
-            "Do NOT replicate bathroom mirror stick swipe if that was used before."
+            f"MANDATORY — Previous listing job #{j.id} used pack '{name}', camera preset '{cam_preset}', "
+            f"story theme excerpt: {theme}. "
+            f"Frame3/5 variants were {v3}/{v5}. Detail actions: {roster}. "
+            f"Per-frame cameras: {cam}. Human pattern: {human}. "
+            "This NEW batch MUST change story theme, color mood, scene family, hero layout, "
+            "camera preset, and creative detail actions — not a reskin of the prior set."
         )
     return ""
 
@@ -451,17 +710,51 @@ def _pick_pack(plan: dict, batch_index: int) -> dict:
         packs = _BEAUTY_BATCH_PACKS
     else:
         packs = _GENERIC_BATCH_PACKS
+    hint = (plan.get("creative_concept_pack_name") or "").strip()
+    if hint:
+        for pack in packs:
+            if pack.get("name") == hint:
+                return pack
+    concept = plan.get("creative_concept_id")
+    if concept and is_beauty_skincare_plan(plan):
+        from generation.services.creative_engine.concepts import concept_by_id
+
+        c = concept_by_id(str(concept))
+        if c:
+            off = int(c.get("beauty_pack_offset") or 0)
+            return packs[off % len(packs)]
     return packs[batch_index % len(packs)]
 
 
 def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
-    if plan.get("plan_template") != "tk_mx_ecommerce_9":
+    from generation.services.listing_bundle import (
+        is_listing_ecommerce_plan,
+        listing_creative_detail_indices,
+        listing_creative_detail_specs,
+        listing_payoff_shot_index,
+    )
+
+    if not is_listing_ecommerce_plan(plan):
         return plan
+
+    creative_idxs = listing_creative_detail_indices(plan)
 
     batch_index = int(plan.get("visual_batch_index") or 0)
     pack = _pick_pack(plan, batch_index)
     plan["visual_batch_index"] = batch_index
     plan["visual_batch_pack_name"] = pack.get("name", f"pack_{batch_index}")
+    if not (plan.get("listing_story_theme_en") or "").strip():
+        plan["listing_story_theme_en"] = (pack.get("story_theme_en") or "").strip()
+    if not (plan.get("listing_color_mood_en") or "").strip():
+        plan["listing_color_mood_en"] = (pack.get("color_mood_en") or "").strip()
+    if plan.get("listing_story_theme_en"):
+        from generation.services.creative_engine.cohesion import build_conversion_story_lock_en
+
+        plan["conversion_story_lock_en"] = build_conversion_story_lock_en(plan)
+        if "Every frame must support" not in plan["conversion_story_lock_en"]:
+            plan["conversion_story_lock_en"] += (
+                " Every frame must support this narrative — do not default to generic catalog shots."
+            )
 
     if job:
         analysis = plan.get("product_analysis") or (job.plan_json or {}).get("product_analysis")
@@ -482,7 +775,7 @@ def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
         role = (shot.get("role") or "").strip()
 
         if role == "hero_hook":
-            hero_human = bool(pack.get("hero_human", True))
+            hero_human = bool(pack.get("hero_human", False))
             shot["human_cast_mode"] = "full" if hero_human else "none"
             human_summary.append(f"#1={'human' if hero_human else 'product-only'}")
             if not hero_human:
@@ -492,15 +785,20 @@ def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
                 )
             continue
 
-        if role in FIXED_FRAME_ROLES and idx not in CREATIVE_DETAIL_INDICES:
+        if role in FIXED_FRAME_ROLES and idx not in creative_idxs:
             continue
 
-        if idx not in CREATIVE_DETAIL_INDICES:
+        if idx not in creative_idxs:
             continue
 
         spec = dict(frames.get(idx) or {})
         if not spec.get("action_en"):
-            spec = dict(CREATIVE_DETAIL_SPECS.get(idx) or {})
+            detail_specs = listing_creative_detail_specs(plan)
+            spec_idx = idx
+            payoff = listing_payoff_shot_index(plan)
+            if payoff and idx == payoff and idx != 9:
+                spec_idx = 9
+            spec = dict(detail_specs.get(spec_idx) or detail_specs.get(idx) or {})
             scene_hints = [
                 "cool studio minimal props",
                 "warm home bathroom narrative",
@@ -545,12 +843,12 @@ def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
         cam_short = spec.get("camera_short") or ""
         if cam_short and cam_short in _CAMERA_ALT_ORIENTATION:
             shot["orientation_lock"] = _CAMERA_ALT_ORIENTATION[cam_short]
-            shot["camera_angle_code"] = cam_short.replace(" ", "_")
+            shot["camera_angle_code"] = cam_short.replace(" ", "_").replace("°", "deg")
         elif cam_short:
-            shot["composition_mandate"] = (
-                f"CAMERA NOTE for this batch: {cam_short} — override default TK matrix angle; "
-                "not the same as prior batch for this product."
+            shot["orientation_lock"] = (
+                f"Batch camera '{cam_short}' — distinct from other frames and from user's previous listing batch."
             )
+            shot["camera_angle_code"] = cam_short.replace(" ", "_").replace("°", "deg")
 
         density = spec.get("density", "balanced")
         if density == "minimal":

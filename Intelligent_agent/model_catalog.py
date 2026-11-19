@@ -65,6 +65,11 @@ def resolve_vision_model(model_id: str | None) -> str:
 
 
 def catalog_payload(profile=None) -> dict:
+    from generation.services.marketplace_profiles import (
+        DEFAULT_MARKETPLACE_ID,
+        MARKETPLACE_PROFILES,
+        marketplace_catalog,
+    )
     chat_default = settings.OPENAI_CHAT_MODEL
     image_default = settings.GRSAI_IMAGE_MODEL
     vision_default = settings.OPENAI_VISION_MODEL
@@ -76,13 +81,25 @@ def catalog_payload(profile=None) -> dict:
         if profile.preferred_vision_model:
             vision_default = resolve_vision_model(profile.preferred_vision_model)
 
+    marketplace_default = DEFAULT_MARKETPLACE_ID
+    if profile and (profile.preferred_marketplace_id or "").strip() in MARKETPLACE_PROFILES:
+        marketplace_default = profile.preferred_marketplace_id.strip()
+
+    from generation.services.aspect_ratio import DEFAULT_ASPECT_RATIO, aspect_ratio_catalog
+    from generation.services.marketplace_profiles import listing_prompt_presets
+
     return {
         "chat_models": CHAT_MODELS,
         "image_models": IMAGE_MODELS,
         "vision_models": VISION_MODELS,
+        "marketplaces": marketplace_catalog(),
+        "listing_prompt_presets": listing_prompt_presets(),
+        "aspect_ratio_options": aspect_ratio_catalog(),
         "defaults": {
             "chat_model": chat_default,
             "image_model": image_default,
             "vision_model": vision_default,
+            "marketplace_id": marketplace_default,
+            "aspect_ratio": DEFAULT_ASPECT_RATIO,
         },
     }

@@ -40,12 +40,21 @@ def _api_root() -> str:
 
 
 def _public_file_url(file_field) -> str | None:
-    base = (getattr(settings, "PUBLIC_SITE_URL", None) or "").strip().rstrip("/")
-    if not base or not file_field:
+    if not file_field:
         return None
     rel = file_field.url
     if rel.startswith("http://") or rel.startswith("https://"):
         return rel
+    name = (file_field.name or "").lstrip("/")
+    if getattr(settings, "COS_USE_STORAGE", False) and name:
+        local = settings.MEDIA_ROOT / name
+        if local.is_file():
+            base = (getattr(settings, "PUBLIC_SITE_URL", None) or "").strip().rstrip("/")
+            if base:
+                return f"{base}/media/{name}"
+    base = (getattr(settings, "PUBLIC_SITE_URL", None) or "").strip().rstrip("/")
+    if not base:
+        return None
     if not rel.startswith("/"):
         rel = f"/{rel}"
     return f"{base}{rel}"
@@ -181,13 +190,15 @@ def _http_call_attempts() -> int:
 
 
 def _post_read_timeout(payload: dict) -> float:
-    base = float(getattr(settings, "GRSAI_POST_READ_TIMEOUT", 300))
+    cap = float(_per_image_max_seconds())
+    base = float(getattr(settings, "GRSAI_POST_READ_TIMEOUT", cap))
+    base = min(base, cap)
     images = payload.get("images") or []
     extra = 0.0
     for img in images:
         if isinstance(img, str) and img.startswith("data:"):
-            extra += min(180.0, len(img) / (400 * 1024))
-    return min(600.0, base + extra)
+            extra += min(60.0, len(img) / (400 * 1024))
+    return min(cap, base + extra)
 
 
 def _is_transient_exc(exc: BaseException) -> bool:

@@ -1,6 +1,8 @@
 from django.conf import settings
 from rest_framework import serializers
 
+from Intelligent_agent.media_urls import resolve_media_file_url
+
 from generation.models import GeneratedImage, GenerationJob, SlotRefineCandidate
 
 
@@ -12,12 +14,14 @@ class GeneratedImageSerializer(serializers.ModelSerializer):
         fields = ("index", "status", "prompt", "url", "error_message")
 
     def get_url(self, obj):
-        if not obj.file:
-            return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        return resolve_media_file_url(obj.file, self.context.get("request"))
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.file and (data.get("status") or "") == GeneratedImage.Status.FAILED:
+            data["status"] = GeneratedImage.Status.SUCCEEDED
+            data["error_message"] = ""
+        return data
 
 
 class GenerationJobSerializer(serializers.ModelSerializer):
@@ -66,6 +70,7 @@ class SlotRefineCandidateSerializer(serializers.ModelSerializer):
             "slot_index",
             "prompt",
             "image_model",
+            "reference_mode",
             "status",
             "url",
             "product_reference_url",
@@ -75,18 +80,12 @@ class SlotRefineCandidateSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_url(self, obj):
-        if not obj.file:
-            return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        return resolve_media_file_url(obj.file, self.context.get("request"))
 
     def get_product_reference_url(self, obj):
-        att = obj.job.reference_attachment
+        att = obj.reference_attachment if (obj.reference_mode or "") == "upload_only" else None
+        if not att:
+            att = obj.job.reference_attachment
         if not att or not att.file:
             return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(att.file.url)
-        return att.file.url
+        return resolve_media_file_url(att.file, self.context.get("request"))

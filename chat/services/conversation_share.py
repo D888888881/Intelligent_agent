@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from accounts.models import UserProfile
 from chat.models import Conversation, Message
+from Intelligent_agent.media_urls import resolve_media_file_url
 from uploads.models import Attachment
 
 
@@ -30,9 +31,7 @@ def generation_job_snapshot_for_user(job_id: int, owner_id: int, request=None) -
     for img in job.images.all().order_by("index"):
         if not img.file:
             continue
-        url = img.file.url
-        if request:
-            url = request.build_absolute_uri(url)
+        url = resolve_media_file_url(img.file, request)
         images.append(
             {
                 "index": img.index,
@@ -62,9 +61,7 @@ def _snapshot_message_metadata(metadata: dict | None, sharer: User, request) -> 
     if ids and not meta.get("attachments"):
         attachments = []
         for att in Attachment.objects.filter(id__in=ids, user_id=sharer.id):
-            url = att.file.url
-            if request:
-                url = request.build_absolute_uri(url)
+            url = resolve_media_file_url(att.file, request)
             attachments.append(
                 {
                     "id": att.id,

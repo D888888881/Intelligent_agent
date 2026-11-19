@@ -48,7 +48,9 @@ def build_material_story_en(analysis: dict) -> str:
 
 
 def apply_product_story_locks(plan: dict) -> dict:
-    if plan.get("plan_template") != "tk_mx_ecommerce_9":
+    from generation.services.listing_bundle import is_listing_ecommerce_plan
+
+    if not is_listing_ecommerce_plan(plan):
         return plan
 
     analysis = plan.get("product_analysis") or {}
@@ -73,22 +75,33 @@ def apply_product_story_locks(plan: dict) -> dict:
 
         if role == "trust_quality" or idx == 6:
             shot["material_story_lock"] = (
-                "TRUST / MATERIAL — " + material + " "
-                "Macro or clinical product-only; show paste/stick/cream texture, grain, smear, or cross-section. "
-                "Minimal typography; generous negative space; NO portrait face."
+                "TRUST / REAL-LIFE CONTEXT — " + material + " "
+                "Place SKU in a believable Mexican daily environment (home, bathroom, bedroom, kitchen, "
+                "street café, or office); natural light, lived-in but tidy props; product legible and premium. "
+                "Convey quality through authentic setting — NOT sterile white macro; NO dominant portrait "
+                "(frame 7 owns creator crowd); differ from frame 3 problem still."
             )
-            shot.setdefault("content_density", "minimal")
+            shot.setdefault("content_density", "balanced")
 
         if role == "pain_empathy" or idx == 3:
+            if not (shot.get("story_beat_lock") or "").strip():
+                shot["story_beat_lock"] = (
+                    f"FRAME 3 — Benefit solve or SKU detail (batch variant); product analysis: "
+                    f"{before or 'core pain points'} / usps from analysis. "
+                    "Set by frame3_flex when applied."
+                )
+
+        if role == "ease_objection" or idx == 7:
             shot["story_beat_lock"] = (
-                f"PAIN BEAT — {before or 'pre-use problem'} — environmental or symbolic still; "
-                "prefer product-in-context or skin texture crop without full face when budget is tight."
+                "SOCIAL PROOF BEAT — Target buyer sees someone like them using the product naturally; "
+                "TikTok-style authentic seeding; eases 'not for me / too hard' objections; product in active use."
             )
 
-        if role == "lifestyle_payoff" or idx == 9:
+        if (role == "lifestyle_payoff" or idx == 9) and not (shot.get("conversion_story_lock") or "").strip():
             shot["story_beat_lock"] = (
-                f"PAYOFF BEAT — {after or 'post-use confidence'} — aspirational scene; "
-                "product visible; avoid duplicating frame 3 pose or frame 7 hand gesture."
+                f"CONVERSION CLOSE — {after or 'purchase-ready mood'}; "
+                "daily/gift/family/worth-buy atmosphere; NOT packshot-only; "
+                "avoid duplicating frame 3 problem still or frame 7 crowd-use pose."
             )
 
         if role == "value_stack" or idx == 8:
@@ -111,7 +124,8 @@ def apply_product_story_locks(plan: dict) -> dict:
     plan["layout_diversity_lock_en"] = (
         "LAYOUT DIVERSITY — No more than TWO top-down flat-lays in the full 9-frame set; "
         "no more than ONE bathroom mirror composition; alternate studio / outdoor / macro / infographic; "
-        "each frame distinct camera distance (macro vs wide vs table-level)."
+        "each frame distinct camera distance (macro vs wide vs table-level) and product rotation; "
+        "never nine similar front-facing packshots."
     )
     plan["shots"] = shots
     return plan

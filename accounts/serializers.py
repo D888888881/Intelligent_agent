@@ -19,6 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
     chat_model = serializers.SerializerMethodField()
     image_model = serializers.SerializerMethodField()
     vision_model = serializers.SerializerMethodField()
+    marketplace_id = serializers.SerializerMethodField()
     approval_status = serializers.SerializerMethodField()
     real_name = serializers.SerializerMethodField()
 
@@ -33,6 +34,7 @@ class UserSerializer(serializers.ModelSerializer):
             "chat_model",
             "image_model",
             "vision_model",
+            "marketplace_id",
             "approval_status",
         )
 
@@ -60,12 +62,28 @@ class UserSerializer(serializers.ModelSerializer):
         profile = self._profile(obj)
         return resolve_vision_model(profile.preferred_vision_model or None)
 
+    def get_marketplace_id(self, obj):
+        from generation.services.marketplace_profiles import normalize_marketplace_id
+
+        profile = self._profile(obj)
+        return normalize_marketplace_id(profile.preferred_marketplace_id)
+
 
 class PreferencesSerializer(serializers.Serializer):
     chat_model = serializers.CharField(required=False, allow_blank=True, max_length=64)
     image_model = serializers.CharField(required=False, allow_blank=True, max_length=64)
     vision_model = serializers.CharField(required=False, allow_blank=True, max_length=64)
     default_image_count = serializers.IntegerField(required=False, min_value=1, max_value=12)
+    marketplace_id = serializers.CharField(required=False, allow_blank=True, max_length=32)
+
+    def validate_marketplace_id(self, value):
+        if not value:
+            return value
+        from generation.services.marketplace_profiles import MARKETPLACE_PROFILES
+
+        if value not in MARKETPLACE_PROFILES:
+            raise serializers.ValidationError("不支持的投放站点")
+        return value
 
     def validate_chat_model(self, value):
         if not value:

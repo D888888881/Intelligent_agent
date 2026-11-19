@@ -5,6 +5,7 @@ Django settings for Intelligent_agent project.
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -93,6 +94,51 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# 腾讯云 COS（可选；开启后新上传与生图写入桶内，不再占应用机磁盘）
+COS_USE_STORAGE = os.getenv("COS_USE_STORAGE", "").lower() in ("1", "true", "yes")
+COS_SECRET_ID = (os.getenv("COS_SECRET_ID") or "").strip()
+COS_SECRET_KEY = (os.getenv("COS_SECRET_KEY") or "").strip()
+COS_REGION = (os.getenv("COS_REGION") or "ap-guangzhou").strip()
+COS_BUCKET = (os.getenv("COS_BUCKET") or "").strip()
+COS_MEDIA_PREFIX = (os.getenv("COS_MEDIA_PREFIX") or "media").strip().strip("/")
+COS_CUSTOM_DOMAIN = (os.getenv("COS_CUSTOM_DOMAIN") or "").strip().lstrip("https://").lstrip("http://").rstrip("/")
+COS_ENDPOINT_URL = (
+    (os.getenv("COS_ENDPOINT_URL") or "").strip().rstrip("/")
+    or f"https://cos.{COS_REGION}.myqcloud.com"
+)
+COS_PUBLIC_READ = os.getenv("COS_PUBLIC_READ", "true").lower() in ("1", "true", "yes")
+COS_ADDRESSING_STYLE = (os.getenv("COS_ADDRESSING_STYLE") or "virtual").strip().lower()
+
+if COS_USE_STORAGE:
+    if not (COS_SECRET_ID and COS_SECRET_KEY and COS_BUCKET):
+        raise ImproperlyConfigured(
+            "COS_USE_STORAGE 已开启，请配置 COS_SECRET_ID、COS_SECRET_KEY、COS_BUCKET"
+        )
+    AWS_ACCESS_KEY_ID = COS_SECRET_ID
+    AWS_SECRET_ACCESS_KEY = COS_SECRET_KEY
+    AWS_STORAGE_BUCKET_NAME = COS_BUCKET
+    AWS_S3_REGION_NAME = COS_REGION
+    AWS_S3_ENDPOINT_URL = COS_ENDPOINT_URL
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+    AWS_S3_ADDRESSING_STYLE = COS_ADDRESSING_STYLE
+    AWS_LOCATION = COS_MEDIA_PREFIX
+    AWS_QUERYSTRING_AUTH = not COS_PUBLIC_READ
+    AWS_DEFAULT_ACL = None
+    AWS_S3_FILE_OVERWRITE = False
+    if COS_CUSTOM_DOMAIN:
+        AWS_S3_CUSTOM_DOMAIN = COS_CUSTOM_DOMAIN
+        MEDIA_URL = f"https://{COS_CUSTOM_DOMAIN}/{COS_MEDIA_PREFIX}/"
+    else:
+        MEDIA_URL = f"https://{COS_BUCKET}.cos.{COS_REGION}.myqcloud.com/{COS_MEDIA_PREFIX}/"
+    STORAGES = {
+        "default": {
+            "BACKEND": "Intelligent_agent.storages.TencentCOSMediaStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
@@ -152,7 +198,7 @@ GRSAI_REFERENCE_IMAGE_MODE = os.getenv("GRSAI_REFERENCE_IMAGE_MODE", "auto").str
 PUBLIC_SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "").strip().rstrip("/")
 GRSAI_REF_MAX_EDGE = int(os.getenv("GRSAI_REF_MAX_EDGE", "1280"))
 GRSAI_REF_MAX_BYTES = int(os.getenv("GRSAI_REF_MAX_BYTES", "850000"))
-GRSAI_POST_READ_TIMEOUT = float(os.getenv("GRSAI_POST_READ_TIMEOUT", "300"))
+GRSAI_POST_READ_TIMEOUT = float(os.getenv("GRSAI_POST_READ_TIMEOUT", "180"))
 GRSAI_PER_IMAGE_MAX_SECONDS = int(os.getenv("GRSAI_PER_IMAGE_MAX_SECONDS", "180"))
 # 单张失败后额外重试次数（1 = 最多共 2 次尝试）
 GRSAI_PER_IMAGE_RETRIES = int(os.getenv("GRSAI_PER_IMAGE_RETRIES", "1"))
@@ -166,6 +212,8 @@ GRSAI_HTTP_RETRIES = int(os.getenv("GRSAI_HTTP_RETRIES", "3"))
 GRSAI_JOB_FAILED_SHOT_RETRIES = int(os.getenv("GRSAI_JOB_FAILED_SHOT_RETRIES", "3"))
 GRSAI_GPT_IMAGE_QUALITY = os.getenv("GRSAI_GPT_IMAGE_QUALITY", "auto")
 GRSAI_GPT_ASPECT_RATIO = os.getenv("GRSAI_GPT_ASPECT_RATIO", "1024x1024")
+# TK México index① 场景主图输出边长（像素）；其余镜头仍用 1:1 / 1024
+TK_MX_HERO_OUTPUT_SIZE = int(os.getenv("TK_MX_HERO_OUTPUT_SIZE", "1280"))
 GRSAI_GPT_BACKGROUND = os.getenv("GRSAI_GPT_BACKGROUND", "")
 
 # Celery
@@ -181,6 +229,12 @@ CELERY_TASK_ROUTES = {
     "generation.tasks.run_slot_refine_task": {"queue": "image"},
 }
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "4"))
+# 无 image 队列 worker 时在 Django 进程内线程跑生图（与 Celery 二选一，见 README）
+GEN_FORCE_INPROCESS_DISPATCH = os.getenv("GEN_FORCE_INPROCESS_DISPATCH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 def _build_csrf_trusted_origins():
     explicit = os.getenv("CSRF_TRUSTED_ORIGINS", "").strip()

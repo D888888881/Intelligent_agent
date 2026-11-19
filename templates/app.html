@@ -6,7 +6,7 @@
   <title>AFS GPT</title>
   <link rel="icon" href="/favicon.ico?v={{ brand_icon_version|default:'20260416' }}" type="image/x-icon" />
   <link rel="icon" href="/brand-icon.png?v={{ brand_icon_version|default:'20260416' }}" type="image/png" sizes="64x64" />
-  <link rel="stylesheet" href="/static/css/app.css?v=20260442" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20260466" />
 </head>
 <body class="chatgpt-theme">
   <div class="app-shell">
@@ -53,6 +53,7 @@
                 注册审批<span id="pending-approval-badge" class="user-menu-badge hidden"></span>
               </button>
               <button type="button" id="btn-admin-users" class="user-dropdown-admin hidden" role="menuitem">用户管理</button>
+              <button type="button" id="btn-admin-usage" class="user-dropdown-admin hidden" role="menuitem">使用统计</button>
               <button type="button" id="btn-logout" role="menuitem">退出登录</button>
             </div>
           </div>
@@ -86,6 +87,19 @@
           </div>
         </div>
         <div class="topbar-spacer"></div>
+        <div class="topbar-docs-wrap" id="topbar-docs-wrap">
+          <button type="button" id="btn-docs-literature" class="topbar-share-btn topbar-docs-btn" title="文献与说明" aria-label="文献与说明" aria-expanded="false" aria-haspopup="menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            <span>文献</span>
+          </button>
+          <div id="topbar-docs-dropdown" class="topbar-docs-dropdown hidden" role="menu" aria-label="文献菜单">
+            <button type="button" id="btn-docs-usage" class="topbar-docs-menu-item" role="menuitem">使用说明</button>
+            <button type="button" id="btn-docs-templates" class="topbar-docs-menu-item" role="menuitem">模板详情</button>
+          </div>
+        </div>
         <button type="button" id="btn-share-chat" class="topbar-share-btn" title="分享当前对话" aria-label="分享当前对话" disabled>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M12 16V4M12 4l4 4M12 4L8 8"/>
@@ -122,6 +136,10 @@
             </button>
 
             <div class="composer-input-wrap">
+              <div id="listing-prompt-presets" class="listing-prompt-presets" hidden aria-label="Listing 快捷话术">
+                <span class="listing-prompt-presets-label muted">快捷话术</span>
+                <div id="listing-prompt-presets-chips" class="listing-prompt-presets-chips"></div>
+              </div>
               <div id="attachment-preview" class="attachment-preview-row hidden">
                 <div id="attachment-preview-list" class="attachment-preview-list" aria-label="已选参考图"></div>
                 <button type="button" id="btn-clear-attachment" class="attachment-clear-all" aria-label="清除全部参考图">清除</button>
@@ -161,12 +179,23 @@
               <span id="active-models-hint" class="muted"></span>
             </div>
             <label class="tools-row">
+              <span>投放站点</span>
+              <select id="marketplace-id" class="tools-select" title="账号默认；切换对话可单独覆盖"></select>
+            </label>
+            <label class="tools-row">
               <span>套图模板</span>
               <select id="plan-template" class="tools-select">
                 <option value="auto" selected>自动识别</option>
-                <option value="tk_mx_ecommerce_9">TK墨西哥 9 图（1主图+1白底+7详情）</option>
+                <option value="tk_mx_ecommerce_9">TK 电商 9 图（1主图+1白底+7详情）</option>
+                <option value="amazon_listing_7">Amazon 7 图（1主图+1白底+5详情+转化）</option>
+                <option value="reference_guided">参考图导演（按提示词+参考图分镜）</option>
                 <option value="generic">通用套图</option>
                 <option value="photo_refine">参考图优化（去 AI 感 / 修图 1 张）</option>
+              </select>
+            </label>
+            <label class="tools-row">
+              <span>输出比例</span>
+              <select id="aspect-ratio" class="tools-select" title="全套各镜头默认使用同一比例；Listing 仅在 1:1 时第①张可用加大方图边长">
               </select>
             </label>
             <label class="tools-row">
@@ -175,6 +204,7 @@
                 <option value="1">1 张</option>
                 <option value="3">3 张</option>
                 <option value="6">6 张</option>
+                <option value="7">7 张</option>
                 <option value="9" selected>9 张</option>
                 <option value="12">12 张</option>
               </select>
@@ -182,6 +212,10 @@
             <label class="tools-row tools-check">
               <input type="checkbox" id="mode-generate" />
               <span>强制套图模式（不勾选也可识别「生成 N 张图」）</span>
+            </label>
+            <label class="tools-row tools-check">
+              <input type="checkbox" id="plan-preview-first" />
+              <span>策划预览模式（默认不勾选：直接生图；勾选：先出策划摘要，确认后再生图）</span>
             </label>
           </div>
 
@@ -213,7 +247,7 @@
         <section class="lightbox-refine-card" aria-label="修复设置">
           <header class="lightbox-refine-card-head">
             <h2 class="lightbox-refine-title">局部修复</h2>
-            <p class="lightbox-refine-hint">
+            <p id="lightbox-refine-hint" class="lightbox-refine-hint">
               参考 <span class="lightbox-refine-tag">商品原图</span>
               <span class="lightbox-refine-plus">+</span>
               <span class="lightbox-refine-tag">当前成图</span>
@@ -221,6 +255,50 @@
             </p>
           </header>
           <div class="lightbox-refine-form">
+            <div class="lightbox-refine-mode-block">
+              <label class="lightbox-refine-switch" for="lightbox-refine-use-upload">
+                <input
+                  type="checkbox"
+                  id="lightbox-refine-use-upload"
+                  class="lightbox-refine-switch-input"
+                />
+                <span class="lightbox-refine-switch-track" aria-hidden="true">
+                  <span class="lightbox-refine-switch-knob"></span>
+                </span>
+                <span class="lightbox-refine-switch-copy">
+                  <span class="lightbox-refine-switch-title">参考新上传图片</span>
+                  <span class="lightbox-refine-switch-desc">开启后不引用商品原图与当前成图</span>
+                </span>
+              </label>
+              <div id="lightbox-refine-upload-wrap" class="lightbox-refine-upload-zone hidden">
+                <input
+                  type="file"
+                  id="lightbox-refine-upload-input"
+                  class="lightbox-refine-upload-input"
+                  accept="image/*"
+                  aria-label="上传修复参考图"
+                />
+                <button type="button" id="lightbox-refine-upload-btn" class="lightbox-refine-upload-btn">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  <span>选择参考图片</span>
+                </button>
+                <p class="lightbox-refine-upload-tip">JPG · PNG · WebP，单张</p>
+                <div id="lightbox-refine-upload-preview" class="lightbox-refine-upload-preview hidden">
+                  <img id="lightbox-refine-upload-thumb" alt="" />
+                  <div class="lightbox-refine-upload-meta">
+                    <span id="lightbox-refine-upload-name" class="lightbox-refine-upload-name"></span>
+                    <span class="lightbox-refine-upload-status">已就绪</span>
+                  </div>
+                  <button type="button" id="lightbox-refine-upload-clear" class="lightbox-refine-upload-clear" title="移除参考图">
+                    移除
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="lightbox-field">
               <label class="lightbox-field-label" for="lightbox-refine-image-model">生图模型</label>
               <select
@@ -285,6 +363,123 @@
     </div>
   </div>
 
+  <div id="docs-usage-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="docs-usage-title">
+    <div class="admin-modal-backdrop" data-docs-close="usage"></div>
+    <div class="admin-modal-panel admin-modal-panel-wide docs-modal-panel">
+      <header class="admin-modal-header">
+        <h2 id="docs-usage-title">使用说明 · 如何正确生图</h2>
+        <button type="button" class="admin-modal-close" data-docs-close="usage" aria-label="关闭">×</button>
+      </header>
+      <div class="docs-modal-body">
+        <p class="docs-lead">按下面顺序操作，可让系统正确识图、策划九张或七张 Listing，并减少返工。</p>
+        <h3 class="docs-h3">1. 选站点与张数</h3>
+        <ul class="docs-ul">
+          <li>输入框上方可先选<strong>投放站点</strong>（墨西哥 / 巴西 / Amazon 等），系统会同步<strong>套图模板</strong>与<strong>张数</strong>。</li>
+          <li>也可点输入框上方的<strong>快捷话术芯片</strong>（如「TK 墨西哥 · 9图」）：会填入预设话术、站点与张数，并勾选「强制套图」。若输入框里已有内容，会询问是否<strong>整段替换</strong>。</li>
+        </ul>
+        <h3 class="docs-h3">2. 写提示词（越具体越好）</h3>
+        <ul class="docs-ul">
+          <li>发送时以输入框<strong>全文</strong>为准：快捷话术 + 你后面补的产品说明会一起参与<strong>识图分析</strong>与<strong>策划</strong>。</li>
+          <li>建议在话术后面写清：品类、材质颜色、核心卖点、必须出现的画面（如「白天/黑夜轮毂效果」），必要时注明希望落在<strong>第几张</strong>。</li>
+          <li><strong>务必上传产品参考图</strong>（包装、多角度更佳）。无图时仅靠文字，分析会偏薄，SKU 容易跑偏。</li>
+        </ul>
+        <h3 class="docs-h3">3. 模式与模板</h3>
+        <ul class="docs-ul">
+          <li><strong>强制套图 / 生成</strong>：走电商 Listing 管线（九图或七图），先生成策划预览，确认后再出图。</li>
+          <li><strong>参考图导演</strong>：按你指定的参考图姿势/版式 mimic，不走固定九职能矩阵。</li>
+          <li><strong>单张修图</strong>：仅优化一张图，不走全套 Listing。</li>
+        </ul>
+        <h3 class="docs-h3">4. 确认策划再生图</h3>
+        <ul class="docs-ul">
+          <li>Listing 任务在步骤一会展示每张图的<strong>职能、版式轮换、产品动作</strong>等摘要；确认无误再点生成。</li>
+          <li>同一 SKU 连续做第二套时，系统会<strong>批次轮换</strong>（如图 3 卖点/细节/成分、图 4 痛点对比、图 5 职能等），避免与上一套雷同。</li>
+        </ul>
+        <h3 class="docs-h3">5. 输出比例</h3>
+        <ul class="docs-ul">
+          <li>工具面板「输出比例」默认 <strong>1:1</strong>，全套各镜头使用同一比例；与<strong>生图模型</strong>无关。</li>
+          <li>Listing 九图在仍为 1:1 时，第①张场景主图可能使用略大的方图边长（环境变量配置）；选竖图/横图时各张均跟随所选比例。</li>
+        </ul>
+        <h3 class="docs-h3">6. 图上文字与合规</h3>
+        <ul class="docs-ul">
+          <li>TikTok 墨西哥：主图可西语标题；<strong>白底图禁止任何营销字</strong>；详情图短西语标注。</li>
+          <li>Amazon：第 1 张白底主图无营销字；第 2 张起可用站点对应语言短标注。</li>
+          <li>不要要求医疗绝对化承诺；包装标签以外默认<strong>不要中文</strong>上画面（墨西哥/Amazon 详情）。</li>
+        </ul>
+        <h3 class="docs-h3">7. 成分类 / 个护提示</h3>
+        <p class="docs-p">护肤、洗护等若有成分信息，系统可能在图 3 或图 5 轮换<strong>整图成分镜</strong>（画面中不出现产品瓶，只展示原料质地）。</p>
+        <h3 class="docs-h3">8. 常见避坑</h3>
+        <ul class="docs-ul">
+          <li>先点芯片再写需求；写好后<strong>不要再点芯片</strong>，否则可能整段被覆盖。</li>
+          <li>需要多色 SKU：上传多参考图，并在文字中说明「多色一并展示」或分色规则。</li>
+          <li>生图较慢时请耐心等待；可刷新页面但勿重复提交同任务。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="docs-templates-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="docs-templates-title">
+    <div class="admin-modal-backdrop" data-docs-close="templates"></div>
+    <div class="admin-modal-panel admin-modal-panel-wide docs-modal-panel">
+      <header class="admin-modal-header">
+        <h2 id="docs-templates-title">模板详情 · 生图逻辑（中文）</h2>
+        <button type="button" class="admin-modal-close" data-docs-close="templates" aria-label="关闭">×</button>
+      </header>
+      <div class="docs-modal-body">
+        <p class="docs-lead">下列为系统内置模板在策划与生图时的<strong>职能分工</strong>。每镜会结合商品分析、批次轮换与动作规划生成独立 prompt，不是简单换角度。</p>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">TikTok Shop · 墨西哥 · 9 图 <code>tk_mx_ecommerce_9</code></h3>
+          <ol class="docs-ol">
+            <li><strong>场景主图</strong>：强视觉冲击引流，可西语标题+图标，非白底。</li>
+            <li><strong>白底合规</strong>：纯白 #FFFFFF，仅产品，禁止任何营销贴纸/文案。</li>
+            <li><strong>图 3（轮换）</strong>：卖点解决对比 / 产品细节特写 / 个护成分整图（无瓶）。</li>
+            <li><strong>图 4</strong>：使用前→使用后，单图纯视觉，禁止 antes/después 等对比文字。</li>
+            <li><strong>图 5（轮换）</strong>：品类对比 / 规格 / 套装清单 / 使用步骤 / 核心功能 / 成分整图。</li>
+            <li><strong>图 6</strong>：墨西哥真实生活场景信任图，产品自然置景。</li>
+            <li><strong>图 7</strong>：目标人群使用场景（偏 UGC 真实感）。</li>
+            <li><strong>图 8</strong>：规格或套装价值呈现。</li>
+            <li><strong>图 9（轮换）</strong>：强转化收尾（日常/送礼/家庭/值得购买/卖点总结等）。</li>
+          </ol>
+        </article>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">TikTok Shop · 巴西 · 9 图</h3>
+          <p class="docs-p">职能矩阵与墨西哥九图相同，差异在<strong>图上语言为葡萄牙语（巴西）</strong>、场景默认巴西本地化。</p>
+        </article>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">Amazon Listing · 7 图 <code>amazon_listing_7</code></h3>
+          <ol class="docs-ol">
+            <li><strong>白底主图</strong>：Amazon 主图规范，无营销字。</li>
+            <li><strong>核心卖点</strong>：价值主图，强调购买理由。</li>
+            <li><strong>规格尺寸</strong>：固定规格/容量/颜色标注。</li>
+            <li><strong>图 4（轮换）</strong>：痛点前后对比（纯视觉）↔ 真实场景代入。</li>
+            <li><strong>图 5（轮换）</strong>：细节品质（同 MX 图 3 逻辑：卖点/特写/成分）。</li>
+            <li><strong>图 6</strong>：功能演示，产品中论证效果（可手部）。</li>
+            <li><strong>图 7</strong>：包装配件 / 盒内清单。</li>
+          </ol>
+        </article>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">通用套图 <code>generic</code> / 自动 <code>auto</code></h3>
+          <p class="docs-p">按你指定的张数生成多张商品图，<strong>不走</strong>固定九职能 / 七职能矩阵，也无 Listing 站点排版锁。适合非 TikTok/Amazon 标准 Listing 的需求。</p>
+        </article>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">参考图导演 <code>reference_guided</code></h3>
+          <p class="docs-p">按上传参考的<strong>构图/版式/模特/场景</strong>逐镜 mimic，产品 identity 锁在你的 SKU 图；不套用九图职能表。需在文字中说明每张参考的用途。</p>
+        </article>
+
+        <article class="docs-template-card">
+          <h3 class="docs-h3">单张修图 <code>photo_refine</code></h3>
+          <p class="docs-p">只生成或优化<strong>一张</strong>图，不走全套策划与批次轮换。</p>
+        </article>
+
+        <p class="docs-foot muted">更多细节以步骤一策划预览中的「职能映射」与各镜字段为准；批次不同版式可能轮换。</p>
+      </div>
+    </div>
+  </div>
+
   <div id="share-chat-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="share-chat-title">
     <div class="admin-modal-backdrop" data-share-close></div>
     <div class="admin-modal-panel share-chat-panel">
@@ -326,6 +521,50 @@
     </div>
   </div>
 
+  <div id="admin-usage-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="admin-usage-title">
+    <div class="admin-modal-backdrop" data-admin-close="usage"></div>
+    <div class="admin-modal-panel admin-modal-panel-wide admin-usage-panel">
+      <header class="admin-modal-header">
+        <h2 id="admin-usage-title">使用统计</h2>
+        <button type="button" class="admin-modal-close" data-admin-close="usage" aria-label="关闭">×</button>
+      </header>
+      <p class="admin-modal-hint muted">按套图任务创建时间统计（任务数、成功生图张数、大图修复张数、生图模型用量）。时区以服务器为准。</p>
+      <div class="admin-usage-toolbar">
+        <div class="admin-usage-period" role="tablist" aria-label="统计周期">
+          <button type="button" class="admin-usage-period-btn is-active" data-usage-period="day">今日</button>
+          <button type="button" class="admin-usage-period-btn" data-usage-period="week">本周</button>
+          <button type="button" class="admin-usage-period-btn" data-usage-period="month">本月</button>
+        </div>
+        <input type="date" id="admin-usage-anchor" class="admin-usage-anchor" aria-label="锚定日期" />
+        <input type="search" id="admin-usage-search" class="admin-users-search" placeholder="搜索用户名或真实名称…" autocomplete="off" aria-label="搜索用户" />
+      </div>
+      <div id="admin-usage-summary" class="admin-usage-summary muted"></div>
+      <div id="admin-usage-model-totals" class="admin-usage-model-totals"></div>
+      <div class="admin-usage-table-wrap">
+        <table class="admin-usage-table" aria-describedby="admin-usage-title">
+          <thead>
+            <tr>
+              <th scope="col">用户</th>
+              <th scope="col">任务数</th>
+              <th scope="col">成图张数</th>
+              <th scope="col">修复张数</th>
+              <th scope="col">生图模型</th>
+            </tr>
+          </thead>
+          <tbody id="admin-usage-tbody"></tbody>
+        </table>
+      </div>
+      <p id="admin-usage-empty" class="admin-empty muted hidden">该时间段内暂无使用记录</p>
+      <footer class="admin-users-pagination">
+        <span id="admin-usage-page-info" class="admin-users-page-info muted"></span>
+        <div class="admin-users-page-actions">
+          <button type="button" id="admin-usage-prev" class="admin-btn admin-btn-reject" disabled>上一页</button>
+          <button type="button" id="admin-usage-next" class="admin-btn admin-btn-reject" disabled>下一页</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
   <script>
     window.IA_CHAT = {
       initialMessageLimit: {{ chat_initial_message_limit|default:10 }},
@@ -336,6 +575,6 @@
   <script src="/static/js/markdown.js?v=20260330"></script>
   <script src="/static/js/chat-cache.js?v=20260404"></script>
   <script src="/static/js/lazy-media.js?v=20260411"></script>
-  <script src="/static/js/app.js?v=20260443"></script>
+  <script src="/static/js/app.js?v=20260484"></script>
 </body>
 </html>

@@ -24,6 +24,7 @@ class UserProfile(models.Model):
     preferred_chat_model = models.CharField(max_length=64, blank=True, default="")
     preferred_image_model = models.CharField(max_length=64, blank=True, default="")
     preferred_vision_model = models.CharField(max_length=64, blank=True, default="")
+    preferred_marketplace_id = models.CharField(max_length=32, blank=True, default="tk_shop_mx")
 
     def __str__(self) -> str:
         return f"Profile({self.user.username})"

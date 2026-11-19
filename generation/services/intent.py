@@ -51,10 +51,36 @@ _TK_MX = re.compile(
     re.I,
 )
 
+_AMAZON = re.compile(
+    r"amazon|亚马逊|amz\b",
+    re.I,
+)
+
 _ECOM_NINE = re.compile(
     r"主图|白底|详情|9\s*张|九张|1\s*\+?\s*1\s*\+?\s*7|1\+1\+7",
     re.I,
 )
+
+_REFERENCE_DIRECTED = re.compile(
+    r"模仿|参考图|图一|图二|图三|图四|图1|图2|图3|图4|图一是|图二是|按上传|导演|"
+    r"reference\s*guid|不使用.*九职能|不用.*内置模板|不用.*系统模板|按照.*提示|结合.*参考|"
+    r"图\d+是|上传.*图",
+    re.I,
+)
+
+_NO_TK_TEMPLATE = re.compile(
+    r"不使用.*模板|不用.*tk|非.*九职能|不走.*1\+1\+7|不按.*职能",
+    re.I,
+)
+
+
+def wants_reference_guided(prompt: str, *, reference_attachment_count: int = 0) -> bool:
+    text = user_intent_snippet(prompt) or (prompt or "")
+    if reference_attachment_count >= 2 and _REFERENCE_DIRECTED.search(text):
+        return True
+    if reference_attachment_count >= 1 and _NO_TK_TEMPLATE.search(text) and _GEN_HINT.search(text):
+        return True
+    return False
 
 
 def user_intent_snippet(prompt: str, max_len: int = 600) -> str:
@@ -134,6 +160,8 @@ def resolve_generation_params(
     *,
     image_count: int,
     plan_template: str,
+    reference_attachment_count: int = 0,
+    marketplace_id: str | None = None,
 ) -> tuple[int, str]:
     tpl = (plan_template or "auto").strip()
     count = max(1, min(int(image_count), settings.GEN_MAX_IMAGE_COUNT))
@@ -144,7 +172,12 @@ def resolve_generation_params(
 
     text = user_intent_snippet(prompt) or (prompt or "")
 
-    if wants_ecommerce_bundle(prompt):
+    if tpl in ("auto", "generic") and wants_reference_guided(
+        prompt, reference_attachment_count=reference_attachment_count
+    ):
+        tpl = "reference_guided"
+
+    if wants_ecommerce_bundle(prompt) and tpl not in ("reference_guided",):
         if parsed is not None and parsed >= 2:
             count = parsed
         elif count < 2 and _ECOM_NINE.search(text):
@@ -155,7 +188,8 @@ def resolve_generation_params(
                 or _ECOM_NINE.search(text)
                 or re.search(r"主图.*白底|白底.*详情", text, re.I)
             ):
-                tpl = "tk_mx_ecommerce_9"
+                if not wants_reference_guided(prompt, reference_attachment_count=reference_attachment_count):
+                    tpl = "tk_mx_ecommerce_9"
             elif tpl == "photo_refine":
                 tpl = "auto"
     elif wants_image_refine(prompt):
@@ -164,26 +198,44 @@ def resolve_generation_params(
         if parsed is None:
             count = 1
     elif tpl == "auto":
-        detected = detect_plan_template(prompt, count)
+        detected = detect_plan_template(prompt, count, reference_attachment_count)
         if detected:
             tpl = detected
 
     if tpl == "auto" and count == 9:
-        detected = detect_plan_template(prompt, count)
+        detected = detect_plan_template(prompt, count, reference_attachment_count)
         if detected:
             tpl = detected
+
+    if marketplace_id:
+        from generation.services.marketplace_profiles import coerce_generation_for_marketplace
+
+        count, tpl = coerce_generation_for_marketplace(marketplace_id, tpl, count)
 
     return count, tpl
 
 
-def detect_plan_template(prompt: str, image_count: int) -> str | None:
+def detect_plan_template(
+    prompt: str,
+    image_count: int,
+    reference_attachment_count: int = 0,
+) -> str | None:
     text = user_intent_snippet(prompt) or (prompt or "")
     if wants_image_refine(prompt) and image_count == 1 and not wants_ecommerce_bundle(prompt):
         return "photo_refine"
+    if wants_reference_guided(prompt, reference_attachment_count=reference_attachment_count):
+        return "reference_guided"
+    if image_count == 7 and (_AMAZON.search(text) or re.search(r"7\s*张|七张", text, re.I)):
+        if not wants_reference_guided(prompt, reference_attachment_count=reference_attachment_count):
+            return "amazon_listing_7"
     if image_count != 9:
         return None
     if _TK_MX.search(text) or _ECOM_NINE.search(text):
-        return "tk_mx_ecommerce_9"
+        if not _NO_TK_TEMPLATE.search(text) and not wants_reference_guided(
+            prompt, reference_attachment_count=reference_attachment_count
+        ):
+            return "tk_mx_ecommerce_9"
     if re.search(r"主图.*白底|白底.*详情", text, re.I):
-        return "tk_mx_ecommerce_9"
+        if not wants_reference_guided(prompt, reference_attachment_count=reference_attachment_count):
+            return "tk_mx_ecommerce_9"
     return None

@@ -6,25 +6,50 @@
   <title>注册 - AFS GPT</title>
   <link rel="icon" href="/favicon.ico?v=20260416" type="image/x-icon" />
   <link rel="icon" href="/brand-icon.png?v=20260416" type="image/png" sizes="64x64" />
-  <link rel="stylesheet" href="/static/css/app.css?v=20260438" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20260545" />
 </head>
 <body class="auth-page chatgpt-theme">
-  <div class="auth-card">
+  <div class="auth-bg auth-bg-space auth-bg-boundary-sea" aria-hidden="true">
+    <div class="auth-bg-aurora" aria-hidden="true"></div>
+    <canvas class="auth-bg-canvas" id="auth-bg-canvas"></canvas>
+    <div class="auth-bg-cursor" id="auth-bg-cursor"></div>
+    <div class="auth-bg-vignette auth-bg-vignette-sea"></div>
+    <div class="auth-bg-grain" aria-hidden="true"></div>
+  </div>
+  <div class="auth-card auth-card-glass">
     <h1>创建账号</h1>
     <p class="muted">提交后需超级管理员审批，通过后方可登录</p>
     <div id="auth-error" class="error hidden"></div>
     <form id="register-form">
       <label for="reg-real-name">真实名称</label>
-      <input id="reg-real-name" name="real_name" required placeholder="例如：忘羡" autocomplete="name" />
+      <div class="auth-glow-wrap">
+        <input id="reg-real-name" name="real_name" required placeholder="例如：忘羡" autocomplete="name" />
+      </div>
       <label for="reg-username">用户名（登录用）</label>
-      <input id="reg-username" name="username" required placeholder="例如：wangxian" autocomplete="username" />
+      <div class="auth-glow-wrap">
+        <input id="reg-username" name="username" required placeholder="例如：wangxian" autocomplete="username" />
+      </div>
       <label for="reg-password">密码（至少 6 位）</label>
-      <input id="reg-password" name="password" type="password" required minlength="6" autocomplete="new-password" />
-      <button type="submit">提交注册申请</button>
+      <div class="auth-glow-wrap">
+        <input id="reg-password" name="password" type="password" required minlength="6" autocomplete="new-password" />
+      </div>
+      <div class="auth-glow-wrap auth-glow-wrap-btn">
+        <button type="submit">提交注册申请</button>
+      </div>
     </form>
     <p id="auth-success" class="success hidden"></p>
-    <p class="auth-foot muted"><a href="/login/">已有账号？去登录</a></p>
+    <p class="auth-foot muted"><a class="auth-glow-link" href="/login/">已有账号？去登录</a></p>
   </div>
+  <script src="/static/js/auth-bg-fallback.js?v=20260514"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/static/vendor/three/build/three.module.js",
+        "three/addons/": "/static/vendor/three/examples/"
+      }
+    }
+  </script>
+  <script type="module" src="/static/js/auth-bg.js?v=20260547"></script>
   <script src="/static/js/register.js"></script>
 </body>
 </html>

@@ -53,6 +53,26 @@ cd e:\py_projiect\Intelligent_agent
 
 浏览器打开 **http://127.0.0.1:8088/login/** 注册/登录（主界面）。
 
+## Docker 部署（Ubuntu 一键）
+
+将项目放到服务器后，在**项目根目录**执行：
+
+```bash
+chmod +x scripts/deploy-docker-ubuntu.sh docker/entrypoint.sh
+sudo bash scripts/deploy-docker-ubuntu.sh
+```
+
+脚本会：安装 Docker（若缺失）→ 从 `.env.docker.example` 生成 `.env`（若尚无）→ `docker compose build` → 启动 **Postgres、Redis、Gunicorn、Celery、Nginx**。
+
+首次部署前请编辑 `.env`（至少 `SECRET_KEY`、`DB_PASSWORD`、`ALLOWED_HOSTS`、`PUBLIC_SITE_URL`、API 与 COS）。默认 HTTP 端口 **80**（`HTTP_PORT` 可改）。
+
+```bash
+docker compose exec web python manage.py createsuperuser   # 可选
+docker compose logs -f web celery
+```
+
+生产需 **HTTPS** 时，可在前再加腾讯云负载均衡/证书，或自行改 `docker/nginx` 配置。Vue 前端**不必**构建或运行。
+
 ## 健康检查
 
 `GET /health/` 检查数据库连接。

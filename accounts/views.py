@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from django.contrib.auth import login, logout
 from django.contrib.auth.models import User
 from django.db.models import Q
+from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -8,6 +11,7 @@ from rest_framework.views import APIView
 
 from Intelligent_agent.model_catalog import catalog_payload
 
+from .admin_usage_stats import compute_admin_usage_stats
 from .models import UserProfile
 from .permissions import IsSuperUser
 from .serializers import (
@@ -86,6 +90,8 @@ class PreferencesView(APIView):
             profile.preferred_vision_model = data["vision_model"] or ""
         if "default_image_count" in data:
             profile.default_image_count = data["default_image_count"]
+        if "marketplace_id" in data:
+            profile.preferred_marketplace_id = data["marketplace_id"] or "tk_shop_mx"
         profile.save()
         return Response(
             {
@@ -154,6 +160,49 @@ class AdminRegistrationRejectView(APIView):
         profile.approval_status = UserProfile.ApprovalStatus.REJECTED
         profile.save(update_fields=["approval_status"])
         return Response(AdminUserSerializer(user).data)
+
+
+class AdminUsageStatsView(APIView):
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        period = (request.GET.get("period") or "day").strip().lower()
+        if period not in ("day", "week", "month"):
+            period = "day"
+
+        anchor = None
+        anchor_raw = (request.GET.get("anchor") or "").strip()
+        if anchor_raw:
+            try:
+                anchor = datetime.strptime(anchor_raw, "%Y-%m-%d").date()
+            except ValueError:
+                return Response({"detail": "anchor 须为 YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            page = max(1, int(request.GET.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.GET.get("page_size", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+
+        q = (request.GET.get("q") or "").strip()
+        include_super = (request.GET.get("include_superusers") or "true").lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+
+        payload = compute_admin_usage_stats(
+            period=period,
+            anchor=anchor or timezone.localdate(),
+            q=q,
+            page=page,
+            page_size=page_size,
+            include_superusers=include_super,
+        )
+        return Response(payload)
 
 
 class AdminUsersView(APIView):

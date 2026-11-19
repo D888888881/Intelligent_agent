@@ -153,6 +153,28 @@ MULTI_IMAGE_ECOMMERCE_EXTRA = """
 """.strip()
 
 
+def _coerce_text_field(val) -> str:
+    """视觉 JSON 有时把 label 等字段输出成数组，下游需字符串。"""
+    if val is None:
+        return ""
+    if isinstance(val, (list, tuple)):
+        parts = [str(x).strip() for x in val if x is not None and str(x).strip()]
+        return " | ".join(parts)
+    return str(val).strip()
+
+
+def _normalize_product_analysis_fields(data: dict) -> None:
+    if not isinstance(data, dict):
+        return
+    if data.get("label_text_exact") is not None:
+        data["label_text_exact"] = _coerce_text_field(data.get("label_text_exact"))
+    for variant in data.get("product_variants") or []:
+        if not isinstance(variant, dict):
+            continue
+        if variant.get("label_text_exact") is not None:
+            variant["label_text_exact"] = _coerce_text_field(variant.get("label_text_exact"))
+
+
 def _normalize_model_cast_gender(data: dict) -> None:
     raw = (data.get("model_cast_gender") or data.get("target_model_gender") or "").strip().lower()
     alias = {
@@ -184,6 +206,7 @@ def _parse_product_analysis_json(raw: str, fallback_attachment=None) -> dict:
             data = json.loads(raw[start : end + 1])
             if isinstance(data, dict):
                 _normalize_model_cast_gender(data)
+                _normalize_product_analysis_fields(data)
             return data
     except json.JSONDecodeError:
         pass

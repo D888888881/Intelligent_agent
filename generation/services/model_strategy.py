@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from generation.services.camera_diversity import apply_camera_diversity
+from generation.services.image_text_policy import merge_image_text_negative
 
 BANANA_STRICT_NEGATIVE = (
     "redesigned packaging, different label artwork, wrong bottle color, wrong cap color, "
@@ -36,6 +37,19 @@ def tune_plan_for_image_model(
     family = model_family(image_model)
     plan["image_model_family"] = family
     plan["reference_attachment_present"] = bool(has_reference or plan.get("reference_attachment_present"))
+
+    if plan.get("plan_template") == "reference_guided" or plan.get("generation_mode") == "reference_guided":
+        plan.setdefault("reference_policy", "reference_guided")
+        plan["default_reference_mode"] = "identity"
+        neg = (plan.get("negative_prompt") or "").strip()
+        if neg:
+            plan["negative_prompt"] = merge_image_text_negative(neg)
+        else:
+            plan["negative_prompt"] = merge_image_text_negative(
+                "collage watermark wrong SKU competitor trademark text"
+            )
+        return plan
+
     shots = plan.get("shots") or []
 
     if family == "banana":
@@ -49,7 +63,7 @@ def tune_plan_for_image_model(
                 "negative_extra",
                 "wrong packaging print, bottle color mismatch, label redesign",
             )
-        plan = apply_camera_diversity(plan)
+        plan = apply_camera_diversity(plan, merge=False)
         shots = plan.get("shots") or []
     elif family == "gpt_image":
         if has_reference:
@@ -74,13 +88,34 @@ def tune_plan_for_image_model(
                 + " Product must be the clear visual hero with professional e-commerce layout; "
                 "rotate the product to the mandated orientation — never clone the reference photo pose.",
             )
-        plan = apply_camera_diversity(plan)
+        plan = apply_camera_diversity(plan, merge=False)
         shots = plan.get("shots") or []
     else:
         plan.setdefault("reference_policy", "default")
 
     plan["shots"] = shots
+    plan["negative_prompt"] = merge_image_text_negative(plan.get("negative_prompt"))
     return plan
+
+
+MIMIC_REFERENCE_MODES = frozenset(
+    {"style_mimic", "layout_mimic", "model_mimic", "scene_mimic", "full_mimic"}
+)
+
+
+def shot_wants_layout_mimic(shot: dict | None, plan: dict | None) -> bool:
+    if (plan or {}).get("plan_template") != "reference_guided" or not shot:
+        return False
+    modes = [str(m).lower() for m in (shot.get("reference_modes") or [])]
+    return any(m in MIMIC_REFERENCE_MODES for m in modes)
+
+
+def resolve_reference_purpose(shot: dict | None, plan: dict | None) -> str:
+    if shot_wants_layout_mimic(shot, plan):
+        return "reference_guided_layout"
+    if (plan or {}).get("plan_template") == "reference_guided":
+        return "reference_guided"
+    return "generation"
 
 
 def reference_prefix_for_model(
@@ -92,6 +127,49 @@ def reference_prefix_for_model(
     if not has_reference:
         return ""
     family = model_family(model_id)
+    if purpose == "reference_guided_layout":
+        if family == "banana":
+            return (
+                "LAYOUT MIMIC — Image 1 in the images array is the LAYOUT BASE CANVAS: copy its composition, crop, "
+                "layout zones, icon/text blocks, scene structure and lighting (no competitor logos/verbatim ad copy). "
+                "Image 2+ lock the SKU product (shape, fabric, color) — replace only the product inside that canvas. "
+                "The output must visibly follow the canvas layout structure. "
+            )
+        if family == "gpt_image":
+            return (
+                "LAYOUT MIMIC — images[0] is the LAYOUT BASE CANVAS: replicate composition, crop, UI zones, "
+                "typography placement, scene structure and lighting from images[0]. "
+                "images[1+] define the SKU (packaging, fabric, colors) — insert that SKU into the canvas layout. "
+                "Do not copy competitor logos or verbatim marketing text. "
+                "Generate one photorealistic listing image now; no text-only refusals. "
+            )
+        return (
+            "Layout mimic: images[0]=canvas layout; images[1+]=SKU; match canvas structure; no competitor logos. "
+        )
+    if purpose == "reference_guided":
+        if family == "banana":
+            return (
+                "REFERENCE-GUIDED — Follow per-image reference_modes in the prompt. "
+                "Identity refs lock SKU graphics and colors; style/layout refs guide composition when instructed. "
+            )
+        if family == "gpt_image":
+            return (
+                "REFERENCE-GUIDED — Follow reference_modes per attached image in the prompt. "
+                "Generate the image directly; identity refs lock SKU; mimic refs follow director intent. "
+            )
+        return "Reference-guided frame: follow director reference_modes in the prompt. "
+    if purpose == "slot_refine_upload":
+        if family == "gpt_image":
+            return (
+                "SINGLE-REFERENCE GENERATION — Exactly one image is attached in images[]. "
+                "Create a new listing frame from scratch following the user prompt; "
+                "use the attachment as the sole visual reference (composition, subject, style). "
+                "Generate the image directly; do not ask for more uploads."
+            )
+        return (
+            "Single reference image attached — generate one new frame per user prompt; "
+            "treat attachment as the only visual guide."
+        )
     if purpose == "slot_refine":
         if family == "banana":
             return (

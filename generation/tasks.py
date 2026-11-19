@@ -43,7 +43,12 @@ def _assistant_status_text(job: GenerationJob) -> str:
     return "正在分析参考图并策划套图…"
 
 
-def _update_assistant_message_after_plan(job: GenerationJob, plan: dict) -> None:
+def _update_assistant_message_after_plan(
+    job: GenerationJob,
+    plan: dict,
+    *,
+    awaiting_confirm: bool = False,
+) -> None:
     if not job.conversation_id:
         return
     msg = (
@@ -58,14 +63,31 @@ def _update_assistant_message_after_plan(job: GenerationJob, plan: dict) -> None
     if not msg:
         return
     summary = (plan.get("planning_summary") or "").strip()
-    if summary:
-        msg.content = summary + "\n\n开始逐张生成高清电商图…"
+    need_confirm = bool(awaiting_confirm or plan.get("awaiting_generation_confirm"))
+    if need_confirm:
+        if summary:
+            msg.content = (
+                summary
+                + "\n\n——\n确认策划无误后，点击下方 **「开始生图」**，或 **「仅优化卖点」** 后再生图。"
+            )
+        else:
+            msg.content = f"已完成 {job.image_count} 条 Listing 主图策划，请确认后开始生图。"
     else:
-        msg.content = f"已完成 {job.image_count} 条镜头策划，开始逐张生成…"
+        concept = (plan.get("creative_concept_label_zh") or plan.get("creative_concept_id") or "").strip()
+        if concept:
+            msg.content = (
+                f"已采用套图创意「{concept}」，共 {job.image_count} 张，正在直接生图（未展开策划预览）…"
+            )
+        else:
+            msg.content = f"策划已完成，共 {job.image_count} 张，正在直接生图…"
     meta = dict(msg.metadata or {})
     meta["generation_phase"] = "planned"
     meta["image_count"] = job.image_count
     meta["plan_ready"] = True
+    meta["plan_preview_mode"] = need_confirm
+    meta["awaiting_generation_confirm"] = need_confirm
+    if summary:
+        meta["planning_summary"] = summary
     msg.metadata = meta
     msg.save(update_fields=["content", "metadata"])
 
@@ -89,6 +111,13 @@ def _update_assistant_message(job: GenerationJob) -> None:
     meta["generation_phase"] = job.status
     meta["completed_count"] = job.completed_count
     meta["image_count"] = job.image_count
+    plan = job.plan_json or {}
+    awaiting = bool(plan.get("awaiting_generation_confirm")) and job.status == GenerationJob.Status.PENDING
+    meta["awaiting_generation_confirm"] = awaiting
+    meta["plan_preview_mode"] = awaiting
+    if not awaiting:
+        meta.pop("planning_summary", None)
+        meta.pop("plan_ready", None)
     msg.metadata = meta
     msg.save(update_fields=["content", "metadata"])
 
@@ -123,6 +152,10 @@ def _generate_shot_with_optional_violation_retry(
     ref = reference_attachment or job.reference_attachment
     has_refs = bool(reference_images) or bool(ref)
 
+    from generation.services.model_strategy import resolve_reference_purpose
+
+    ref_purpose = resolve_reference_purpose(shot, plan)
+
     def _call(p, attachment, ref_images=None):
         if ref_images:
             return generate_image_file(
@@ -132,6 +165,7 @@ def _generate_shot_with_optional_violation_retry(
                 reference_images=ref_images,
                 aspect_ratio=aspect_ratio,
                 image_model=image_model,
+                reference_purpose=ref_purpose,
             )
         return generate_image_file(
             p,
@@ -140,6 +174,7 @@ def _generate_shot_with_optional_violation_retry(
             reference_attachment=attachment,
             aspect_ratio=aspect_ratio,
             image_model=image_model,
+            reference_purpose=ref_purpose,
         )
 
     imgs = reference_images
@@ -194,6 +229,10 @@ def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str
     )
     if gen_img.status == GeneratedImage.Status.SUCCEEDED and gen_img.file:
         return True, ""
+
+    job.refresh_from_db(fields=["cancel_requested", "status"])
+    if job.cancel_requested or job.status == GenerationJob.Status.CANCELLED:
+        return False, "用户已取消任务"
 
     gen_img.status = GeneratedImage.Status.RUNNING
     gen_img.error_message = ""
@@ -254,6 +293,15 @@ def run_generation_job(self, job_id: int):
     ):
         return
 
+    job.refresh_from_db(fields=["cancel_requested", "status"])
+    if job.cancel_requested or job.status == GenerationJob.Status.CANCELLED:
+        job.status = GenerationJob.Status.CANCELLED
+        if not job.finished_at:
+            job.finished_at = timezone.now()
+        job.save(update_fields=["status", "finished_at"])
+        dispatch_next_for_user(job.user_id)
+        return
+
     if not job.started_at:
         job.started_at = timezone.now()
         job.status = GenerationJob.Status.RUNNING
@@ -269,6 +317,29 @@ def run_generation_job(self, job_id: int):
     shots = sorted(shots, key=lambda s: int(s.get("index") or 0))
     aspect_ratio = plan.get("aspect_ratio", "1:1")
     image_model = plan.get("image_model") or None
+
+    def _aspect_for_shot(shot: dict) -> str:
+        try:
+            idx = int(shot.get("index") or 0)
+        except (TypeError, ValueError):
+            idx = 0
+        from generation.services.listing_bundle import is_listing_ecommerce_plan
+
+        from generation.services.aspect_ratio import is_square_aspect
+
+        if (
+            idx == 1
+            and is_listing_ecommerce_plan(plan)
+            and is_square_aspect(aspect_ratio)
+        ):
+            px = shot.get("hero_output_size") or plan.get("tk_mx_hero_output_pixels")
+            if px:
+                try:
+                    px = int(px)
+                    return f"{px}x{px}"
+                except (TypeError, ValueError):
+                    pass
+        return aspect_ratio
     failed_count = 0
     last_error = ""
 
@@ -278,7 +349,7 @@ def run_generation_job(self, job_id: int):
         job.refresh_from_db(fields=["cancel_requested"])
         if job.cancel_requested:
             break
-        ok, err = _run_one_shot(job, shot, plan, aspect_ratio, image_model)
+        ok, err = _run_one_shot(job, shot, plan, _aspect_for_shot(shot), image_model)
         if not ok:
             failed_count += 1
             last_error = err or last_error
@@ -309,7 +380,7 @@ def run_generation_job(self, job_id: int):
             job.refresh_from_db(fields=["cancel_requested"])
             if job.cancel_requested:
                 break
-            ok, err = _run_one_shot(job, shot, plan, aspect_ratio, image_model)
+            ok, err = _run_one_shot(job, shot, plan, _aspect_for_shot(shot), image_model)
             if ok:
                 failed_count = max(0, failed_count - 1)
             elif err:
@@ -323,6 +394,21 @@ def run_generation_job(self, job_id: int):
         job.save(update_fields=["status", "finished_at"])
         dispatch_next_for_user(job.user_id)
         return
+
+    for img in job.images.filter(status=GeneratedImage.Status.RUNNING):
+        if img.file:
+            img.status = GeneratedImage.Status.SUCCEEDED
+            img.error_message = ""
+            img.save(update_fields=["status", "error_message"])
+        else:
+            img.status = GeneratedImage.Status.FAILED
+            img.error_message = img.error_message or "生成未完成（worker 中断）"
+            img.save(update_fields=["status", "error_message"])
+    for img in job.images.filter(status=GeneratedImage.Status.FAILED):
+        if img.file:
+            img.status = GeneratedImage.Status.SUCCEEDED
+            img.error_message = ""
+            img.save(update_fields=["status", "error_message"])
 
     job.refresh_from_db(fields=["completed_count"])
     failed_count = job.images.filter(status=GeneratedImage.Status.FAILED).count()
@@ -341,6 +427,11 @@ def run_generation_job(self, job_id: int):
         else:
             job.error_message = ""
         job.save(update_fields=["status", "error_message", "finished_at"])
+    job.refresh_from_db()
+    job.completed_count = job.images.filter(status=GeneratedImage.Status.SUCCEEDED).count()
+    if job.completed_count >= job.image_count and job.status == GenerationJob.Status.SUCCEEDED:
+        job.error_message = ""
+        job.save(update_fields=["completed_count", "error_message"])
     _update_assistant_message(job)
     dispatch_next_for_user(job.user_id)
 

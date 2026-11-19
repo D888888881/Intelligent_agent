@@ -16,4 +16,5 @@ urlpatterns = [
     path("admin/pending-registrations/<int:user_id>/reject/", views.AdminRegistrationRejectView.as_view()),
     path("admin/users/", views.AdminUsersView.as_view()),
     path("admin/users/<int:user_id>/", views.AdminUserDetailView.as_view()),
+    path("admin/usage-stats/", views.AdminUsageStatsView.as_view()),
 ]

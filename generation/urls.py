@@ -15,6 +15,9 @@ urlpatterns = [
     ),
     path("<int:job_id>/slots/<int:index>/refine/", views.SlotRefineCreateView.as_view()),
     path("<int:job_id>/", views.GenerationDetailView.as_view()),
+    path("<int:job_id>/confirm-run/", views.GenerationConfirmRunView.as_view()),
+    path("<int:job_id>/restrategy/", views.GenerationRetrategyView.as_view()),
     path("<int:job_id>/cancel/", views.GenerationCancelView.as_view()),
+    path("<int:job_id>/download-all/", views.GenerationDownloadAllView.as_view()),
     path("<int:job_id>/stream/", views.GenerationStreamView.as_view()),
 ]
