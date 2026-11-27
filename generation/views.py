@@ -16,7 +16,7 @@ from generation.models import GeneratedImage, GenerationJob, SlotRefineCandidate
 from generation.renderers import GenerationDownloadRenderersMixin
 from generation.serializers import GenerationJobSerializer, SlotRefineCandidateSerializer
 from generation.services.slot_refine import apply_slot_refine_candidate
-from generation.tasks import run_slot_refine_task
+from generation.services.dispatch import dispatch_slot_refine
 from generation.services.intent import parse_image_count_from_prompt, resolve_generation_params
 from generation.services.job_references import normalize_attachment_id_list
 from generation.services.prepare import start_prepare_and_run_async
@@ -92,6 +92,9 @@ class GenerationCreateView(APIView):
         cast_skin = (request.data.get("cast_skin_preset") or "caucasian").strip().lower()
         if cast_skin not in ("caucasian", "diverse", "black_only"):
             cast_skin = "caucasian"
+        background_mode = (request.data.get("background_mode") or "random").strip().lower()
+        if background_mode not in ("random", "solid_virtual", "real_environment"):
+            background_mode = "random"
         # 默认直接生图；仅当 plan_preview_only=true（前端勾选「策划预览模式」）时先策划再确认
         plan_preview_only = bool(request.data.get("plan_preview_only"))
         reuse_creative = (request.data.get("reuse_creative_concept_id") or "").strip()
@@ -111,6 +114,7 @@ class GenerationCreateView(APIView):
                 "image_model": image_model,
                 "reference_attachment_ids": ref_ids,
                 "cast_skin_preset": cast_skin,
+                "background_mode": background_mode,
                 "plan_template": plan_template,
                 "marketplace_id": marketplace_id,
                 "aspect_ratio": aspect_ratio,
@@ -376,6 +380,11 @@ class GenerationConfirmRunView(APIView):
         plan = dict(plan)
         plan.pop("awaiting_generation_confirm", None)
         plan.pop("plan_ready", None)
+        from generation.services.listing_bundle import is_listing_ecommerce_plan
+        from generation.services.listing_run_prepare import prepare_listing_plan_for_generation
+
+        if is_listing_ecommerce_plan(plan):
+            plan = prepare_listing_plan_for_generation(plan, job=job)
         job.plan_json = plan
         job.save(update_fields=["plan_json"])
         from generation.services.dispatch import enqueue_or_run
@@ -460,18 +469,28 @@ class SlotRefineCreateView(APIView):
             ref_mode = "dual"
 
         ref_attachment = None
+        ref_ids: list[int] = []
         if ref_mode == "upload_only":
-            try:
-                ref_att_id = int(request.data.get("reference_attachment_id") or 0)
-            except (TypeError, ValueError):
-                ref_att_id = 0
-            if not ref_att_id:
-                return Response({"detail": "请上传并选择参考图"}, status=400)
+            from django.conf import settings
+
+            from generation.services.job_references import normalize_attachment_id_list
             from uploads.models import Attachment
 
-            ref_attachment = Attachment.objects.filter(pk=ref_att_id, user=request.user).first()
-            if not ref_attachment or not ref_attachment.file:
+            raw_ids = request.data.get("reference_attachment_ids")
+            if raw_ids is None:
+                raw_ids = request.data.get("reference_attachment_id")
+            ref_ids = normalize_attachment_id_list(raw_ids)[: settings.GEN_MAX_REFERENCE_IMAGES]
+            if not ref_ids:
+                return Response({"detail": "请上传并选择参考图"}, status=400)
+            found = {
+                a.id: a
+                for a in Attachment.objects.filter(pk__in=ref_ids, user=request.user)
+            }
+            ordered = [found[i] for i in ref_ids if found.get(i) and found[i].file]
+            if len(ordered) != len(ref_ids):
                 return Response({"detail": "参考图无效或无权访问"}, status=400)
+            ref_attachment = ordered[0]
+            ref_ids = [a.id for a in ordered]
         else:
             from generation.services.job_references import job_attachment_ids
 
@@ -488,9 +507,10 @@ class SlotRefineCreateView(APIView):
             image_model=image_model,
             reference_mode=ref_mode,
             reference_attachment=ref_attachment,
+            reference_attachment_ids=ref_ids,
             status=SlotRefineCandidate.Status.PENDING,
         )
-        run_slot_refine_task.delay(candidate.id)
+        dispatch_slot_refine(candidate.id)
         data = SlotRefineCandidateSerializer(candidate, context={"request": request}).data
         return Response(data, status=status.HTTP_202_ACCEPTED)
 

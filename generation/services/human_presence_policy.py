@@ -24,9 +24,9 @@ HUMAN_BUDGET_PROFILES: list[dict] = [
     },
     {
         "name": "minimal_human",
-        "max_face_frames": 0,
+        "max_face_frames": 1,
         "max_hands_frames": 1,
-        "max_human_touch_frames": 1,
+        "max_human_touch_frames": 2,
         "hero_prefer": "product",
         "frame4_human": "none",
     },
@@ -72,6 +72,8 @@ def _mode_weight(mode: str) -> tuple[bool, bool]:
 
 
 def _set_mode(shot: dict, mode: str) -> None:
+    if shot.get("human_cast_mandatory") or (shot.get("human_cast_mandatory_en") or "").strip():
+        return
     shot["human_cast_mode"] = mode
     if mode == "none":
         shot.pop("human_model_lock", None)
@@ -114,16 +116,34 @@ def apply_human_presence_policy(plan: dict, *, pack: dict, batch_index: int) -> 
 
     frame4 = by_idx.get(4)
     if frame4 and frame4.get("role") == "usp_primary":
-        f4 = (budget.get("frame4_human") or "none").lower()
-        if f4 == "none":
-            _set_mode(frame4, "none")
-            frame4["transformation_story_lock"] = (
-                "PAIN TRANSFORMATION — Single-frame before→after visual WITHOUT comparison captions "
-                "(no antes/después/before/after/使用前/使用后). Lighting, product/skin state only; "
-                "no generic-vs-hero layout; no portrait faces; no collage grid; SKU prominent."
-            )
+        tpl = (plan.get("plan_template") or "").strip()
+        needs_model = bool(frame4.get("human_cast_mandatory"))
+        if tpl == "tk_mx_ecommerce_9":
+            needs_model = needs_model or frame4.get("human_cast_mode") not in (None, "", "none", "unset")
+        if needs_model:
+            frame4["human_cast_mandatory"] = True
+            if (frame4.get("human_cast_mode") or "").lower() in ("none", "", "unset"):
+                zone = (plan.get("product_analysis") or {}).get("application_zone") or ""
+                if zone == "body_bath":
+                    frame4["human_cast_mode"] = "full"
+                elif zone == "hair":
+                    frame4["human_cast_mode"] = "hair"
+                else:
+                    frame4["human_cast_mode"] = "face"
+            if not (frame4.get("frame4_authoritative_en") or "").strip():
+                frame4["transformation_story_lock"] = (
+                    "PAIN TRANSFORMATION — Single-frame before→after on a MODEL using the product on the "
+                    "correct application zone; WITHOUT comparison captions (no antes/después) and WITHOUT overlay "
+                    "marketing text. Visible transformation on person + SKU in frame — NOT product-only still life."
+                )
         else:
-            _set_mode(frame4, f4)
+            frame4["human_cast_mandatory"] = False
+            frame4["human_cast_mode"] = "none"
+            frame4["transformation_story_lock"] = (
+                "SURFACE TRANSFORMATION — Single-frame before→after on the cleaned object/surface "
+                "(toilet bowl, tile, etc.) with hero cleaner SKU; NO human model; "
+                "no antes/después text; NOT skin or hair compare."
+            )
 
     frame5 = by_idx.get(5)
     if frame5 and frame5.get("role") == "usp_secondary":
@@ -161,7 +181,13 @@ def apply_human_presence_policy(plan: dict, *, pack: dict, batch_index: int) -> 
             shot = by_idx.get(idx)
             if not shot or (shot.get("role") or "") != role:
                 continue
-            if idx == 7 and role in _PROTECT_HUMAN_FRAME7_ROLES:
+            if idx == 7 and (role in _PROTECT_HUMAN_FRAME7_ROLES or role == "ease_objection"):
+                continue
+            if idx == 6 and (shot.get("human_cast_mode") or "").lower() in ("face", "full"):
+                continue
+            if idx == 4 and shot.get("human_cast_mandatory"):
+                continue
+            if shot.get("human_cast_mandatory") or (shot.get("human_cast_mandatory_en") or "").strip():
                 continue
             mode = (shot.get("human_cast_mode") or "").lower()
             if mode == "none":

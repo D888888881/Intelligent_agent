@@ -12,7 +12,7 @@ FRAME_9_VARIANTS: list[dict] = [
             "FRAME 9 — CONVERSION CLOSE «daily essential»: show the product belongs in everyday Mexico life "
             "(morning counter, commute bag, desk, gym locker, kitchen shelf). "
             "Mood: reliable routine, always within reach — NOT a sterile packshot, NOT duplicate frame 1 hero layout. "
-            "Product visible but embedded in lived-in daily context; short Spanish CTA about daily use."
+            "Product visible in a lived-in daily context that fills the frame, plus a large Spanish text panel."
         ),
         "cta_es_pool": ["Tu rutina diaria", "Imprescindible", "Cada día", "Uso diario fácil"],
         "scene_family": "daily_routine_payoff",
@@ -65,10 +65,9 @@ FRAME_9_VARIANTS: list[dict] = [
         "layout_subtype": "benefit_summary",
         "action_code": "frame9_benefit_summary",
         "mandate_en": (
-            "FRAME 9 — CONVERSION CLOSE «benefit summary»: elevated closing layout listing 3–4 DISTINCT "
-            "Spanish advantage lines (short bullets integrated in design) PLUS product visible — "
-            "summarize leftover USPs not used in frames 1–8. Clean TikTok Shop typography, mobile legible. "
-            "NOT nine-grid collage; NOT repeating frame 1 headline verbatim; still feels like a closing slide."
+            "FRAME 9 — CONVERSION CLOSE «benefit summary»: filled closing scene plus a large Spanish text panel "
+            "that explains THIS frame's one benefit (headline, two-line introduction, three proof lines). "
+            "Product visible. NOT nine-grid collage; NOT repeating frame 1 headline verbatim."
         ),
         "cta_es_pool": ["Compra ya", "Pide el tuyo", "No te lo pierdas", "Listo para ti"],
         "scene_family": "benefit_summary_close",
@@ -81,7 +80,8 @@ FRAME_9_VARIANTS: list[dict] = [
         "mandate_en": (
             "FRAME 9 — CONVERSION CLOSE «lifestyle aspiration»: post-use emotional payoff in Mexico context "
             "(balcony sunset, café terrace, park bench, open road) — buyer imagines life AFTER owning SKU. "
-            "Product can be smaller in frame if environment sells the dream; golden or soft light. "
+            "Product and setting both fill the frame; light and color stay in the set grade, not golden hour. "
+            "Add this frame's large Spanish text panel. "
             "NOT duplicate frame 3 pain still; NOT frame 7 TikTok portrait pose."
         ),
         "cta_es_pool": ["Tu mejor versión", "Vive mejor", "Momento perfecto", "Empieza hoy"],
@@ -124,7 +124,7 @@ def _unused_usp_bullets(plan: dict, analysis: dict) -> list[str]:
             out.append(s[:40])
         if len(out) >= 4:
             break
-    return out or ["Calidad", "Confianza", "Comodidad"]
+    return out or ["Cierre claro", "Motivo real", "Eleccion concreta"]
 
 
 def apply_frame9_conversion_variant(plan: dict, *, job=None) -> dict:

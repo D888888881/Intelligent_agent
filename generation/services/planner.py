@@ -369,6 +369,11 @@ def _finalize_plan(
     elif not plan.get("planning_summary"):
         plan["planning_summary"] = _planning_summary_text(shots, analysis, marketing_strategy)
 
+    if template not in LISTING_PLAN_TEMPLATES:
+        from generation.services.listing_usp_distribution import enforce_unique_selling_copy
+
+        plan = enforce_unique_selling_copy(plan, fill_gaps=False)
+
     return plan
 
 
@@ -511,8 +516,11 @@ def _plan_tk_mx_ecommerce_9(
     briefs = strategy_brief_by_index(marketing_strategy or {})
     shots = []
 
+    from generation.services.tk_mx_listing import WHITE_BG_SCENE_PROMPT_EN
+
     for frame in TK_MX_NINE_FRAME_MATRIX:
         idx = frame["index"]
+        role = frame["role"]
         brief = briefs.get(idx, frame)
         creative = (brief.get("creative_direction_en") or "").strip()
         if not creative:
@@ -520,19 +528,26 @@ def _plan_tk_mx_ecommerce_9(
                 f"Unique {frame['visual_archetype']} for {frame['marketing_pillar']}: "
                 f"{brief.get('consumer_question', frame['consumer_question'])}"
             )
-        prompt_en = (
-            f"{creative} "
-            f"Marketing pillar: {brief.get('marketing_pillar', frame['marketing_pillar'])}. "
-            f"Visual archetype: {brief.get('visual_archetype', frame['visual_archetype'])}. "
-            f"Scene family: {brief.get('scene_family', frame['scene_family'])}. "
-            "Do NOT create a simple packshot with minor rotation — tell a different story beat. "
-            "Explicitly rotate product to a unique camera angle vs the other 8 frames (not the same front-facing pose). "
-            f"User brief: {subject}. "
-            f"Diversity lock: {brief.get('diversity_lock', 'Must differ from the other 8 listing frames')}. "
-            "Same product SKU as reference; new scene narrative only."
-        )
+        if role == "white_bg_catalog" or idx == 2:
+            prompt_en = (
+                f"{WHITE_BG_SCENE_PROMPT_EN} "
+                f"Same SKU as reference ({product_identity[:400]}). "
+                "Do not add marketing story, lifestyle props, or comparison objects."
+            )
+        else:
+            prompt_en = (
+                f"{creative} "
+                f"Marketing pillar: {brief.get('marketing_pillar', frame['marketing_pillar'])}. "
+                f"Visual archetype: {brief.get('visual_archetype', frame['visual_archetype'])}. "
+                f"Scene family: {brief.get('scene_family', frame['scene_family'])}. "
+                "Tell a different story beat vs other frames but keep the EXACT same product category and SKU. "
+                "Explicitly rotate product to a unique camera angle vs the other 8 frames (not the same front-facing pose). "
+                f"User brief: {subject}. "
+                f"Diversity lock: {brief.get('diversity_lock', 'Must differ from the other 8 listing frames')}. "
+                "Same product SKU as reference; new scene narrative only — never unrelated appliances or gadgets."
+            )
         compare = _comparison_snippet_for_shot(brief.get("role", frame["role"]), analysis)
-        if compare:
+        if compare and role != "white_bg_catalog" and idx != 2:
             prompt_en += f" Comparison context: {compare}"
         shots.append(
             {
@@ -905,8 +920,15 @@ def analyze_product_for_plan(
         att_list = [attachments]
 
     try:
-        return analyze_products_for_ecommerce(att_list, user_prompt, vision_model=vision_model)
+        analysis = analyze_products_for_ecommerce(att_list, user_prompt, vision_model=vision_model)
     except Exception as exc:
-        return {"visual_identity": str(exc), "primary_function": user_prompt[:300]}
+        analysis = {
+            "visual_identity": str(exc),
+            "vision_failed": True,
+            "primary_function": "",
+        }
+    from generation.services.product_usage_semantics import attach_package_hints
+
+    return attach_package_hints(analysis, att_list)
 
 

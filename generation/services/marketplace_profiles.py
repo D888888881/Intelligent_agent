@@ -9,9 +9,10 @@ DEFAULT_MARKETPLACE_ID = "tk_shop_mx"
 
 ON_IMAGE_TEXT_MANDATE_ES_MX = (
     "ON-IMAGE TEXT POLICY — CRITICAL: Do NOT render Chinese (中文/汉字) anywhere. "
-    "Marketing typography must be Spanish (México), SHORT and high-contrast — each frame needs "
-    "a focal message (not pure visual-only art). Hero: up to 2 headline lines + 3 icon bullets; "
-    "other frames: 1–3 short callouts (2–6 words) OR compact spec/step tags. "
+    "Marketing typography must be Spanish (México) and high-contrast. "
+    "Except the white catalog and the before/after frame, each image needs a designed title: "
+    "bold headline, a two-line introduction, and three proof lines about one benefit. "
+    "Follow THIS set's TITLE TREATMENT exactly. Color block, thin line, side bar, outline type, and open margin are different sets, not one fixed look. "
     "Reproduce packaging label text EXACTLY from reference only. No English marketing unless user asked."
 )
 
@@ -44,11 +45,10 @@ MARKETPLACE_PROFILES: dict[str, dict[str, Any]] = {
         "scene_geo_adj_en": "Mexican",
         "scene_geo_display": "México",
         "listing_typography_mandate_en": (
-            "ON-IMAGE TYPOGRAPHY — Index 1: bold Spanish headline + icons BUT visual scroll-stop impact is primary. "
-            "Index 2: ZERO added marketing text (white catalog — packaging label from product only). "
-            "Frames 3–9: short Spanish (México) selling messages (2–6 words focal lines). "
-            "No Chinese except exact packaging from reference. No English marketing. "
-            "No paragraph walls — mobile TikTok legibility."
+            "ON-IMAGE TYPOGRAPHY — Index 2 and Index 4: ZERO added marketing text. "
+            "Every other frame: a LARGE Spanish panel (headline, two-line introduction, three proof lines) "
+            "covering about one third of the image, readable on a phone. The photo fills the rest. "
+            "No Chinese except exact packaging from reference. No English marketing. No tiny one-line label."
         ),
         "doctrine_zh": (
             "全套 9 张均为 TikTok Shop México Listing 主图（1 场景分层主图 + 1 白底合规 + 7 职能详情）。"

@@ -1,4 +1,5 @@
 import base64
+import time
 
 from django.conf import settings
 
@@ -57,6 +58,27 @@ def attachment_to_data_url(attachment) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _vision_chat_create(client, **kwargs):
+    """识图网络抖动时重试，避免一次断线就把卖点换成占位标题。"""
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            transient = any(
+                token in msg
+                for token in ("connection", "timeout", "timed out", "temporarily", "502", "503", "504")
+            )
+            if not transient or attempt == 2:
+                raise
+            time.sleep(1.2 * (attempt + 1))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("识图模型未返回内容")
+
+
 def analyze_image(attachment, prompt: str, vision_model: str | None = None) -> str:
     if not attachment:
         return ""
@@ -67,7 +89,8 @@ def analyze_image(attachment, prompt: str, vision_model: str | None = None) -> s
     client = get_openai_client()
     data_url = attachment_to_data_url(attachment)
 
-    resp = client.chat.completions.create(
+    resp = _vision_chat_create(
+        client,
         model=model,
         messages=[
             {
@@ -113,11 +136,24 @@ ECOMMERCE_PRODUCT_ANALYSIS_PROMPT = """
 - package_includes: 包装内含物数组（若看不出可空数组）
 - target_audience: 目标人群
 - model_cast_gender: 生图人物性别约束，三选一字符串 — female（女性模特/手部，如口红、女装、女性内衣、女鞋）、male（男性，如男士护肤、剃须、男款服饰鞋）、any（中性/男女均可，如部分家居、3C、明显 unisex 运动装备）。口红/唇釉/唇彩/眼影/粉底/睫毛膏/女性美妆必须为 female；不要对女性美妆输出 male。
-- spanish_headlines: 5-8 条西班牙语短标题（每条 3-6 词，适合主图/详情图字卡）
-- usage_scenarios: 2-4 个使用场景短语（西班牙语）
-- before_use_state: 使用「本品前」用户/目标对象的典型问题状态（中文 1-2 句，可被画成单张照片，如毛躁发、暗沉肤、杂乱厨房）
-- after_use_state: 使用「本品后」的理想改善结果（中文 1-2 句，可被画成单张照片，与 before 成对）
-- before_after_visual_en: 英文 40-80 词，描述一张电商图里如何表达「前后对比」（同一画面内的左右/前后/因果隐喻；禁止拼贴多宫格，仍须 single photograph）
+- spanish_headlines: 6-8 条墨西哥西语标题。必须根据「这一个商品」的功效、核心卖点和客户痛点来写，每条只讲一个不同好处，3-7 个词。禁止整套商品套用品类空话（如 Brillo sano、Cabello suave、Sin frizz、Calidad premium、Fácil de usar、Axila fresca、Piel luminosa、Textura clara、Fórmula estable）。直发喷雾要写出热保护、抗潮湿、一梳就顺这类本品效果；除臭膏要写出腋下干爽、不泛白、维持一整天这类客户需求。不同商品的标题不能换成同一组句子。
+- spanish_customer_needs: 4-6 条墨西哥西语，每条是客户为什么买这个产品（痛点或购买理由），对应该商品功效，不与 spanish_headlines 重复，不写品类套话。
+- application_zone: 应用领域枚举 body_bath | hair | oral | skin_face | body_hand | hand_wash | body_deo | nail_fungus | wearable | home_clean | generic
+  （洗手液/hand wash/jabón de manos=hand_wash。前后对比是手上有细菌斑点和对面细菌斑点消失，瓶身必须照参考图的轮廓、泵头和标签，禁止把瓶子拉变形）
+  （围巾/丝巾/披肩/scarf/bufanda=wearable。画面里有头发也不要标 hair，前后对比是戴上这条围巾，不是头发毛躁变顺滑）
+  （除臭/止汗/deodorant=body_deo，涂腋下不是脸；甲癣/灰指甲/nail fungus=nail_fungus，卖点写指甲看起来更干净，禁止写配方稳定、质地清晰）
+  （以瓶身/包装盒印刷文字为第一依据：body wash/shower gel/沐浴露/沐浴啫喱/gel de ducha=body_bath；
+  capilar/cabello/alisador/spray alisador/anti-frizz/secador/liso=hair；
+  西语「baño de brillo」=头发光泽护发用语，不是沐浴露，必须标 hair 而非 body_bath）
+- primary_function: 必须忠实概括包装声称的本品主要功效（中英均可），后文 before/after 只能改同一部位
+- transformation_subject_en: 英文一句话——图4唯一对比主体（沐浴露=shower arm/shoulder skin + foam；护发=hair strands；洁厕=toilet bowl）
+- frame4_comparison_en: 英文 80-150 词，专用于图4单图对比，必须与 application_zone 和 primary_function 一致
+- transformation_subject_en: 必填一句话，图4唯一对比物理主体（护发=hair strands；沐浴露=shower skin+foam；洁厕=toilet bowl）；与 application_zone 必须一致
+- usage_scenarios: 2-4 个使用场景短语（西班牙语），必须匹配产品真实用法（护发=涂抹/冲洗头发，不是喷在手上）
+- correct_usage_steps_en: 字符串数组 3-4 步，按包装真实用法（如洗发：湿发→起泡→冲洗；护发素：涂发梢→等待→冲洗）
+- before_use_state: 使用「本品前」改善对象的典型问题（护发=毛躁干枯发；牙膏=牙齿发黄口气；护肤=暗沉肌；勿写错部位）
+- after_use_state: 使用「本品后」理想结果（与 before 同一部位）
+- before_after_visual_en: 英文 60-120 词，单张图内如何视觉表达同一部位的前后对比（禁止拼贴宫格）
 - same_category_comparison: 对象，含：
   - generic_alternative_en: 同品类「普通/廉价/常规」替代品的通用外观描述（无真实竞品品牌名、无他人商标）
   - our_advantages_en: 字符串数组 3-5 条，本品相对该普通替代品的可视化优势（容量、成分、包装、效果、认证等）
@@ -140,6 +176,8 @@ ECOMMERCE_PRODUCT_ANALYSIS_PROMPT = """
 
 额外要求：visual_identity 必须足够让画师在「全新棚拍/场景」中画出同一 SKU，而不是复刻这张参考图。
 before/after 与 category comparison 必须基于该商品真实品类与功能推断，不可编造医疗承诺。
+沐浴露/沐浴啫喱：before/after 必须针对淋浴中的身体皮肤+泡沫，禁止画发丝毛躁对比。护发/洗发/发膜：只针对头发。禁止沐浴露与护发对比主体互换。
+牙膏/口腔：牙齿笑容；洗面奶/面霜：面部皮肤；洁厕：洁具表面，无需人物。
 若存在 product_variants，顶层 identity_lock_en 仍写「主 SKU/系列共性」；各变体细节放在 product_variants 内。
 """.strip()
 
@@ -258,7 +296,8 @@ def analyze_products_for_ecommerce(
                 "image_url": {"url": attachment_to_data_url(att)},
             }
         )
-    resp = client.chat.completions.create(
+    resp = _vision_chat_create(
+        client,
         model=model,
         messages=[{"role": "user", "content": parts}],
         max_tokens=4096,
@@ -268,6 +307,9 @@ def analyze_products_for_ecommerce(
         raise RuntimeError("识图模型未返回内容")
     raw = (choices[0].message.content or "").strip()
     data = _parse_product_analysis_json(raw, att_list[0])
+    from generation.services.product_usage_semantics import normalize_product_usage_analysis
+
+    data = normalize_product_usage_analysis(data, user_prompt)
     data.setdefault(
         "product_variants",
         [
@@ -303,7 +345,9 @@ def analyze_product_for_ecommerce(
     if "primary_function" not in data and user_prompt:
         data["primary_function"] = user_prompt[:500]
     data.setdefault("reference_image_count", 1)
-    return data
+    from generation.services.product_usage_semantics import normalize_product_usage_analysis
+
+    return normalize_product_usage_analysis(data, user_prompt)
 
 
 def build_user_content(text: str, attachments) -> str | list:

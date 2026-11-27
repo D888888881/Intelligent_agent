@@ -155,6 +155,8 @@ def reference_image_payloads_for_shot(job, shot: dict) -> list[str]:
     n_att = len(attachments)
     if shot_requests_all_references(shot, n_att):
         attachments = attachments[: max_ref_images_showcase()]
+    elif plan.get("multi_variant_listing") and shot.get("featured_variant_index") is not None:
+        attachments = order_attachments_for_shot(attachments, shot)[:1]
     else:
         attachments = order_attachments_for_shot(attachments, shot)
         attachments = attachments[: max_ref_images_per_grsai_request()]

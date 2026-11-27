@@ -24,6 +24,13 @@ def _resolve_listing_template(effective_template: str, category_strategy: dict) 
     return category_strategy.get("plan_template") or tpl
 
 
+def _background_mode_from_existing(existing_plan: dict) -> str:
+    raw = (existing_plan.get("background_mode") or "random").strip().lower()
+    if raw not in ("random", "solid_virtual", "real_environment"):
+        return "random"
+    return raw
+
+
 def run_listing_pipeline(
     job,
     *,
@@ -69,6 +76,7 @@ def run_listing_pipeline(
     if preset_skin not in ("caucasian", "diverse", "black_only"):
         preset_skin = "caucasian"
     plan["cast_skin_preset"] = preset_skin
+    plan["background_mode"] = _background_mode_from_existing(existing_plan)
     plan["category_strategy"] = {
         k: v for k, v in category_strategy.items() if k != "ecommerce_strategy"
     }
@@ -145,6 +153,7 @@ def run_generic_pipeline(
     if preset_skin not in ("caucasian", "diverse", "black_only"):
         preset_skin = "caucasian"
     plan["cast_skin_preset"] = preset_skin
+    plan["background_mode"] = _background_mode_from_existing(existing_plan)
 
     from generation.services.aspect_ratio import merge_user_aspect_into_plan
 

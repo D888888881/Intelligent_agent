@@ -55,10 +55,10 @@ TK_MX_NINE_FRAME_MATRIX = [
         "index": 6,
         "role": "trust_quality",
         "frame_contract": "creative_detail",
-        "marketing_pillar": "信任背书",
-        "consumer_question": "在真实日常生活里，品质是否靠谱、值得信赖？",
-        "visual_archetype": "real_life_trust_context",
-        "scene_family": "mexico_daily_environment",
+        "marketing_pillar": "使用功效",
+        "consumer_question": "用了之后带来哪些具体好处、生活改善？",
+        "visual_archetype": "usage_benefit_payoff",
+        "scene_family": "benefit_in_daily_use",
     },
     {
         "index": 7,
@@ -160,7 +160,9 @@ AMAZON_LISTING_7_FRAME_MATRIX = [
 def build_marketing_strategy(product_analysis: dict, user_prompt: str) -> dict:
     """基于商品分析 + 用户需求，生成 9 帧营销策略（优先 LLM）。"""
     from chat.services.openai_client import is_chat_configured, get_openai_client
+    from generation.services.product_usage_semantics import normalize_product_usage_analysis
 
+    product_analysis = normalize_product_usage_analysis(dict(product_analysis or {}), user_prompt)
     base = _strategy_fallback(product_analysis, user_prompt)
     if product_analysis.get("pain_points"):
         base["pain_points"] = product_analysis["pain_points"]
@@ -183,8 +185,10 @@ def build_marketing_strategy(product_analysis: dict, user_prompt: str) -> dict:
         "index 8 用 specs_features 或 value_bundle；index 9 用 benefit_summary 或 conversion_close）。"
         "index 1 hero_hook：强视觉冲击 scroll-stopper（高对比/景深/光束/色块场景），产品约40-52%，西语标题+icon 辅佐画面；非白底、非平淡 packshot。"
         "index 2 white_bg_catalog：纯白合规 catalog，禁止任何营销文案/贴纸/icon，仅产品+包装原有印刷。"
-        "creative_direction_en 必须包含明确的 product facing / camera angle（互不相同）。"
+        "creative_direction_en 必须包含明确的 product facing / camera angle（互不相同）；"
+        "每张图只完成该 index 职能的一个视觉焦点，禁止把多张图的卖点/步骤/场景塞进一张（特写就只做局部特写，不要又要标题又要场景又要对比）。"
         "必须消费 product_analysis 的 before/after、same_category_comparison、key_selling_points、visual_identity。"
+        "放大卖点：creative_direction_en 要用画面（对比、状态、道具、肤质/笑容/整洁度）直观强化 USP，解决 pain_points，不要空话。"
         "index 3 批次轮换：卖点解决对比（舒适/收纳/省空间/顺滑/耐用/显瘦/方便等，纯视觉）或产品细节特写（材质/纹理/做工/接口/标签/包装局部）；"
         "4 痛点对比（批次轮换：单图使用前/使用后 或 普通品/本品，纯视觉禁 antes/después/使用前/使用后 等字）；"
         "5 由系统按批次轮换：品类对比 / 规格属性 / 套装清单 / 使用步骤 / 核心功能（layout_subtype 五选一作参考，实际以批次为准）；"
@@ -223,15 +227,22 @@ def build_marketing_strategy(product_analysis: dict, user_prompt: str) -> dict:
 
 
 def _strategy_fallback(product_analysis: dict, user_prompt: str) -> dict:
+    from generation.services.product_listing_narrative import (
+        default_pain_phrases_en_for_zone,
+        default_spanish_usps_for_zone,
+        product_summary_for_story,
+    )
+
+    zone = (product_analysis.get("application_zone") or "generic").strip()
     usps = product_analysis.get("key_selling_points") or []
     pains = product_analysis.get("pain_points") or []
     if not pains:
-        pains = ["日常困扰", "效果不稳定", "使用麻烦"]
+        pains = default_pain_phrases_en_for_zone(zone)
     if not usps:
-        usps = ["品质可靠", "易于使用", "性价比高"]
+        usps = default_spanish_usps_for_zone(zone)
 
     headlines = product_analysis.get("spanish_headlines") or []
-    h = lambda i: headlines[i % len(headlines)] if headlines else "Calidad premium"
+    h = lambda i: headlines[i % len(headlines)] if headlines else ""
 
     briefs = []
     for frame in TK_MX_NINE_FRAME_MATRIX:
@@ -261,7 +272,7 @@ def _strategy_fallback(product_analysis: dict, user_prompt: str) -> dict:
         )
 
     return {
-        "product_summary_zh": product_analysis.get("primary_function") or user_prompt[:200],
+        "product_summary_zh": product_summary_for_story(product_analysis, user_prompt),
         "purchase_motivations": ["解决问题", "提升形象", "省时省心"],
         "pain_points": pains[:4] if isinstance(pains, list) else [str(pains)],
         "core_usps": usps[:4] if isinstance(usps, list) else [str(usps)],
@@ -281,9 +292,50 @@ def _fallback_before_after(analysis: dict, usp_fallback: str) -> str:
     before = (analysis.get("before_use_state") or "before condition")[:200]
     after = (analysis.get("after_use_state") or "improved after use")[:200]
     visual = (analysis.get("before_after_visual_en") or "").strip()
+    blob = (
+        (analysis.get("category") or "")
+        + (analysis.get("primary_function") or "")
+        + before
+        + after
+    ).lower()
+    oral_default = (
+        "oral care split: yellowed/dull smile or stained teeth (muted cool light) vs "
+        "brighter whiter smile and fresher look (warm bright light), same toothpaste tube on vanity"
+    )
+    if any(x in blob for x in ("tooth", "oral", "dental", "paste", "牙膏", "美白", "口腔")):
+        if not visual or "lifestyle" in visual.lower() and "before" not in visual.lower():
+            visual = oral_default
+    hair_default = (
+        "hair transformation split: left/muted dull frizzy damaged hair vs right/warm glossy smooth "
+        "manageable hair; hero hair-care SKU on vanity or in shower scene — NOT hand moisturizer demo"
+    )
+    zone = (analysis.get("application_zone") or "").strip()
+    body_default = (
+        "body wash shower split: left/muted dull dry arm or shoulder skin vs right/bright smooth skin "
+        "with rich white foam lather; hero gel bottle on shower tile — NOT hair frizz compare"
+    )
+    if zone == "body_bath" or any(
+        x in blob for x in ("body wash", "shower gel", "沐浴露", "沐浴", "gel de ducha")
+    ):
+        if not visual or any(x in visual.lower() for x in ("hair", "frizz", "cabello", "scalp")):
+            visual = body_default
+    elif zone == "hair" or any(
+        x in blob for x in ("hair", "shampoo", "conditioner", "护发", "洗发", "发膜", "护发素")
+    ):
+        if not visual or any(x in visual.lower() for x in ("hand", "palm", "skin care", "manos")):
+            visual = hair_default
+    home_default = (
+        "toilet/surface cleaning split: left/muted stained dirty bowl or tile vs right/bright "
+        "sparkling sanitary white result; cleaner bottle on rim or shelf — NO human, NO skin/hair compare"
+    )
+    if zone == "home_clean" or any(
+        x in blob for x in ("toilet", "洁厕", "马桶", "wc clean", "bowl clean", "bathroom clean")
+    ):
+        if not visual or any(x in visual.lower() for x in ("skin", "hair", "model", "face")):
+            visual = home_default
     extra = visual if visual else (
-        f"One cohesive studio/lifestyle photo expressing transformation from '{before}' to '{after}' "
-        f"while hero product {usp_fallback} is prominent; use lighting/color/contrast or split visual weight, "
+        f"One cohesive photo: transformation from '{before}' to '{after}' "
+        f"while hero product {usp_fallback} is visible; asymmetric before/after lighting or split layout, "
         f"NOT a multi-panel collage grid."
     )
     return (
@@ -293,21 +345,29 @@ def _fallback_before_after(analysis: dict, usp_fallback: str) -> str:
 
 
 def _fallback_category_compare(analysis: dict, usp_fallback: str) -> str:
+    from generation.services.product_sku_guard import primary_product_noun_en, sanitize_same_category_comparison
+
+    noun = primary_product_noun_en(analysis, "")
+    sanitize_same_category_comparison(analysis, noun)
     comp = analysis.get("same_category_comparison") or {}
     if isinstance(comp, dict):
-        generic = (comp.get("generic_alternative_en") or "plain unbranded generic same-category product")[:200]
+        generic = (
+            comp.get("generic_alternative_en")
+            or f"plain unbranded generic {noun} in the same category only"
+        )[:240]
         shot = (comp.get("comparison_shot_en") or "").strip()
         adv = comp.get("our_advantages_en") or []
         adv_txt = "; ".join(str(x) for x in adv[:4]) if adv else usp_fallback
     else:
-        generic = "plain unbranded generic alternative"
+        generic = f"plain unbranded generic {noun}"
         shot = ""
         adv_txt = usp_fallback
     if not shot:
         shot = (
-            f"Single studio photograph: our branded SKU on the right looking premium, "
-            f"generic alternative ({generic}) on the left looking dull; same surface and lighting; "
-            f"highlights advantages: {adv_txt}. No competitor logos or trademarked brands."
+            f"Single studio photograph: our branded {noun} on the right looking premium, "
+            f"generic same-category alternative ({generic}) on the left looking dull; "
+            f"same surface and lighting; highlights advantages: {adv_txt}. "
+            "No competitor logos, no unrelated kitchen appliances or electronics."
         )
     return shot
 
@@ -334,11 +394,9 @@ def _fallback_creative_en(role: str, user_prompt: str, usps: list, pains: list, 
         "usp_primary": _fallback_before_after(analysis, usp1),
         "usp_secondary": _fallback_category_compare(analysis, usp2),
         "trust_quality": (
-            "Real-life trust scene in Mexico: product believably placed or lightly in-use in a natural "
-            "daily environment — home living room, bathroom vanity, bedroom nightstand, kitchen counter, "
-            "street café table, or modern office desk; warm/natural light, lived-in details, commercial "
-            "clarity on SKU; communicates quality through authentic context, NOT sterile clinical macro "
-            "on pure white; avoid full-face portrait (save for frame 7); must differ from frame 3 problem still."
+            "TK frame 6 usage benefit: show felt payoff after use — model may appear (face/half-body); "
+            "bold Spanish benefit headline on image; authentic Mexico daily context; "
+            "NOT frame-4 before/after split; NOT frame-7 UGC crowd duplicate."
         ),
         "ease_objection": (
             "TikTok-style crowd/social-proof scene: target consumer actively using the product in a "

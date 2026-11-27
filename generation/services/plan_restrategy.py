@@ -44,6 +44,7 @@ def reoptimize_job_plan(
     plan["user_prompt"] = job.prompt
     plan["image_model"] = existing.get("image_model") or plan.get("image_model")
     plan["cast_skin_preset"] = existing.get("cast_skin_preset") or plan.get("cast_skin_preset")
+    plan["background_mode"] = existing.get("background_mode") or plan.get("background_mode") or "random"
     plan["visual_batch_index"] = existing.get("visual_batch_index", 0)
 
     from generation.services.listing_bundle import LISTING_PLAN_TEMPLATES

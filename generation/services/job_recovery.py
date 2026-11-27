@@ -42,7 +42,7 @@ def maybe_recover_stuck_generation_job(job: GenerationJob) -> GenerationJob:
     from django.utils.dateparse import parse_datetime
 
     dispatched_raw = plan.get("_dispatched_at")
-    ref = job.updated_at
+    ref = job.created_at
     if dispatched_raw:
         dt = parse_datetime(dispatched_raw)
         if dt:

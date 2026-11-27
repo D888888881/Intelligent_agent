@@ -34,6 +34,11 @@ def run_layer4_bundle_creative(plan: dict, *, job) -> tuple[dict, dict]:
     from generation.services.job_references import job_attachments
     from generation.services.variant_shots import apply_multi_reference_listing_rules
     from generation.services.detail_shot_diversity import apply_detail_shot_diversity
+    from generation.services.listing_conversion_story import apply_listing_conversion_story
+    from generation.services.listing_frame_focus import apply_listing_frame_focus
+    from generation.services.listing_human_cast import apply_mandated_human_casts
+    from generation.services.listing_visual_cohesion import apply_listing_visual_cohesion
+    from generation.services.product_sku_guard import apply_product_sku_guard
     from generation.services.tk_mx_listing import apply_tk_mx_listing_plan
     from generation.services.camera_diversity import apply_camera_diversity
     from generation.services.listing_usp_distribution import apply_listing_usp_distribution
@@ -45,7 +50,12 @@ def run_layer4_bundle_creative(plan: dict, *, job) -> tuple[dict, dict]:
 
     from generation.services.creative_engine import apply_creative_engine, finalize_creative_set_record
 
+    plan = apply_product_sku_guard(plan)
+    from generation.services.product_usage_semantics import apply_product_usage_locks
+
+    plan = apply_product_usage_locks(plan)
     plan = apply_creative_engine(plan, job=job)
+    plan = apply_listing_visual_cohesion(plan)
     plan = apply_multi_reference_listing_rules(plan, len(job_attachments(job)))
     plan = apply_detail_shot_diversity(plan, job=job)
     batch_idx = int(plan.get("visual_batch_index") or 0)
@@ -55,6 +65,13 @@ def run_layer4_bundle_creative(plan: dict, *, job) -> tuple[dict, dict]:
     plan = apply_tk_mx_listing_plan(plan)
     plan = apply_camera_diversity(plan, merge=True)
     plan = apply_listing_usp_distribution(plan)
+    plan = apply_tk_mx_listing_plan(plan)
+    plan = apply_listing_visual_cohesion(plan)
+    plan = apply_camera_diversity(plan, merge=True)
+    plan = apply_product_sku_guard(plan)
+    plan = apply_listing_conversion_story(plan)
+    plan = apply_listing_frame_focus(plan)
+    plan = apply_mandated_human_casts(plan)
     plan = finalize_creative_set_record(plan)
 
     roles_after = {

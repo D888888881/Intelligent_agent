@@ -179,7 +179,49 @@ CREATIVE_CONCEPTS: list[dict[str, Any]] = [
         ),
         "category_affinity": ("beauty_skincare", "home", "generic", ""),
     },
+    {
+        "id": "bathroom_wellness",
+        "label_zh": "浴室护理",
+        "label_en": "Bathroom Wellness",
+        "generic_pack_name": "theme_bathroom_vanity",
+        "beauty_pack_offset": 6,
+        "story_theme_en": (
+            "CREATIVE CONCEPT — Bathroom Wellness: clean vanity, shower shelf, steam-soft light, "
+            "towels and plants; hair/skin/oral ritual context — NOT busy family kitchen dining table."
+        ),
+        "color_mood_en": "clean white tile, soft mint or warm ivory, packaging accent colors",
+        "dimensions": {
+            "visual_style": "clean bathroom editorial",
+            "scene_environment": "modern bathroom vanity / shower shelf",
+            "color_palette": "white tile and soft botanical green",
+            "lighting": "window daylight + soft vanity bulbs",
+            "camera_language": "eye-level vanity, mirror-adjacent angles",
+            "composition": "product + ritual props, transformation-readable",
+            "human_presence": "hands or hair back/side in use",
+            "info_layout": "short benefit callouts",
+        },
+        "hero_mandate_en": (
+            "HERO — Bathroom ritual: product on vanity or shower niche with towel/plant accents; "
+            "fresh self-care mood; forbidden: kitchen counter with citrus produce."
+        ),
+        "category_affinity": ("beauty_skincare", "hair", "oral", "generic", ""),
+    },
 ]
+
+
+ZONE_PREFERRED_CONCEPT: dict[str, list[str]] = {
+    "body_bath": ["bathroom_wellness", "minimalist_premium", "warm_home_narrative"],
+    "hair": ["bathroom_wellness", "minimalist_premium", "warm_home_narrative"],
+    "oral": ["bathroom_wellness", "minimalist_premium", "professional_studio"],
+    "skin_face": ["bathroom_wellness", "minimalist_premium", "premium_gift"],
+    "body_hand": ["warm_home_narrative", "bathroom_wellness", "minimalist_premium"],
+}
+
+ZONE_FORBIDDEN_SCENE_SNIPPETS: dict[str, tuple[str, ...]] = {
+    "hair": ("family kitchen", "dining", "busy kitchen", "produce", "citrus"),
+    "oral": ("family kitchen", "dining", "outdoor park"),
+    "skin_face": ("family kitchen", "dining"),
+}
 
 
 def concept_by_id(concept_id: str) -> dict | None:

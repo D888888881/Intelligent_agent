@@ -19,8 +19,10 @@ def vision_prompt_for_job(*, job_prompt: str, plan_template: str) -> str:
 def vision_prompt_multi_sku(job_prompt: str) -> str:
     return (
         f"{job_prompt}\n\n"
-        "[系统提示] 用户上传了多张参考图，可能为多色口红/多配色鞋/多色内衣或吊带等，"
-        "请为每个可售款式+颜色建立 product_variants。"
+        "[系统提示] 这几张图是同一个商品链接下的不同款式或颜色，不是互不相关的商品。"
+        "顶层字段写这一个产品的作用和卖点；product_variants 按上传顺序每张图一条，"
+        "source_image_index 从 0 起，写清这一款和其它款看得见的差别。"
+        "画面不是口红、鞋或内衣时，不要把品类写成那些。"
     ).strip()
 
 
@@ -44,6 +46,9 @@ def run_layer1_product_understanding(
             vision_prompt,
             vision_model=vision_model,
         )
+        from generation.services.product_usage_semantics import normalize_product_usage_analysis
+
+        analysis = normalize_product_usage_analysis(analysis, job_prompt)
 
     summary = {
         "has_analysis": bool(analysis),

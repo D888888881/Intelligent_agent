@@ -19,9 +19,22 @@ class GrsaiError(Exception):
 class GrsaiDownloadError(GrsaiError):
     """Grsai 任务已成功，但从 CDN 拉取成片失败。"""
 
+    def __init__(self, message: str, *, image_url: str = ""):
+        super().__init__(message)
+        self.image_url = image_url
+
 
 class GrsaiTransientError(GrsaiError):
     """HTTP 断连、握手超时等瞬时错误，可重试生图或轮询。"""
+
+
+class GrsaiRemoteTaskError(GrsaiTransientError):
+    """中转站任务已经提交。后续只能继续查询或下载，不能再 POST 一次新的生图。"""
+
+    def __init__(self, message: str, *, task_id: str = "", image_url: str = ""):
+        super().__init__(message)
+        self.task_id = task_id or ""
+        self.image_url = image_url or ""
 
 
 def _headers() -> dict:
@@ -204,7 +217,10 @@ def _post_read_timeout(payload: dict) -> float:
 def _is_transient_exc(exc: BaseException) -> bool:
     if isinstance(exc, GrsaiTransientError):
         return True
+    proxy_error = getattr(httpx, "ProxyError", None)
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return True
+    if proxy_error and isinstance(exc, proxy_error):
         return True
     text = str(exc).lower()
     needles = (
@@ -214,6 +230,8 @@ def _is_transient_exc(exc: BaseException) -> bool:
         "timed out",
         "connection reset",
         "connection aborted",
+        "failed to connect",
+        "proxy",
         "eof occurred",
         "server_timeout",
     )
@@ -298,6 +316,36 @@ def _per_image_max_seconds() -> int:
     return int(getattr(settings, "GRSAI_PER_IMAGE_MAX_SECONDS", 180))
 
 
+def per_shot_active_poll_seconds(shot_index: int | None, model: str | None = None) -> int:
+    """1–7 张到点就先继续后面的图。8–9 张不参与回收，等到中转站自己的时限。"""
+    if shot_index in (8, 9):
+        return _poll_budget_seconds(model)
+    return max(30, _per_image_max_seconds())
+
+
+def deferred_recovery_wait_seconds() -> int:
+    return max(0, int(getattr(settings, "GRSAI_DEFERRED_RECOVERY_WAIT_SECONDS", 30)))
+
+
+def is_deferrable_shot_index(shot_index: int | None) -> bool:
+    try:
+        idx = int(shot_index or 0)
+    except (TypeError, ValueError):
+        return False
+    return 1 <= idx <= 7
+
+
+def _poll_budget_seconds(model: str | None) -> int:
+    """轮询时限与提交耗时分开。提交很慢时不能把已经在中转站跑着的任务提前放弃。"""
+    name = (model or "").lower()
+    if "gpt-image" in name:
+        budget = int(getattr(settings, "GRSAI_GPT_POLL_TIMEOUT", 900))
+    else:
+        budget = int(getattr(settings, "GRSAI_POLL_TIMEOUT", 600))
+    cap = int(getattr(settings, "GRSAI_POLL_MAX_SECONDS", 1200))
+    return max(30, min(budget, cap))
+
+
 def is_per_shot_poll_timeout(exc: BaseException) -> bool:
     """单张轮询达到 GRSAI_PER_IMAGE_MAX_SECONDS，应跳过该张继续套图。"""
     text = str(exc)
@@ -346,7 +394,8 @@ def _download_result_image(image_url: str) -> bytes:
             if n + 1 < attempts:
                 time.sleep(min(2 * (n + 1), 8))
     raise GrsaiDownloadError(
-        f"Grsai 任务已成功，但下载成片失败（已重试 {attempts} 次）: {last_exc}"
+        f"Grsai 任务已成功，但下载成片失败（已重试 {attempts} 次）: {last_exc}",
+        image_url=image_url,
     ) from last_exc
 
 
@@ -394,15 +443,69 @@ def wait_for_task(task_id: str, *, model: str | None = None, max_seconds: int | 
     raise GrsaiError(f"Grsai 单张超时 ({max_seconds}s) task={task_id}: {last}")
 
 
+def relay_task_terminal_bytes(data: dict, *, task_id: str) -> bytes:
+    status = (data.get("status") or "").lower()
+    if status == "violation":
+        raise GrsaiError(data.get("error") or "内容审核未通过")
+    if status != "succeeded":
+        err = data.get("error") or data.get("message") or f"生成失败: {status}"
+        raise GrsaiError(f"{err} (task={task_id})")
+    results = data.get("results") or []
+    if not results or not results[0].get("url"):
+        raise GrsaiRemoteTaskError("Grsai 成功但未返回图片 URL", task_id=task_id)
+    image_url = results[0]["url"]
+    try:
+        return _download_result_image(image_url)
+    except GrsaiDownloadError as exc:
+        raise GrsaiRemoteTaskError(
+            str(exc),
+            task_id=task_id,
+            image_url=exc.image_url or image_url,
+        ) from exc
+
+
+def get_relay_task_snapshot(task_id: str) -> dict:
+    if not task_id:
+        raise GrsaiError("没有中转站任务 id")
+    return _get_result(task_id)
+
+
+def recover_deferred_task_bytes(
+    task_id: str,
+    *,
+    image_url: str = "",
+    model: str | None = None,
+    grace_wait: int | None = None,
+) -> bytes:
+    """第 9 张后回收：先查一次，running 则 grace_wait 后再短轮询。"""
+    grace = deferred_recovery_wait_seconds() if grace_wait is None else max(0, grace_wait)
+    if image_url:
+        try:
+            return _download_result_image(image_url)
+        except GrsaiDownloadError:
+            pass
+    data = get_relay_task_snapshot(task_id)
+    status = (data.get("status") or "").lower()
+    if status == "succeeded":
+        return relay_task_terminal_bytes(data, task_id=task_id)
+    if status in ("failed", "violation"):
+        err = data.get("error") or data.get("message") or status
+        raise GrsaiError(f"中转站任务已结束: {err} (task={task_id})")
+    if grace > 0:
+        logger.info("Grsai deferred task=%s still running, wait %ss", task_id, grace)
+        time.sleep(grace)
+    data = wait_for_task(task_id, model=model, max_seconds=60)
+    return relay_task_terminal_bytes(data, task_id=task_id)
+
+
 def _generate_once(
     *,
     prompt: str,
     model: str,
     reference_images: list[str] | None,
     aspect_ratio: str,
-    max_seconds: int,
+    shot_index: int | None = None,
 ) -> bytes:
-    attempt_started = time.time()
     payload = build_generate_payload(
         model=model,
         prompt=prompt,
@@ -424,31 +527,48 @@ def _generate_once(
 
     logger.info("Grsai task created id=%s model=%s status=%s", task_id, model, status)
 
-    remaining = max_seconds - (time.time() - attempt_started)
-    if remaining <= 5:
-        raise GrsaiError(f"Grsai 单张超时 ({max_seconds}s)：提交后无剩余轮询时间")
+    poll_cap = per_shot_active_poll_seconds(shot_index, model)
+    try:
+        if status == "running" or status not in TERMINAL_STATUSES:
+            data = wait_for_task(task_id, model=model, max_seconds=poll_cap)
+    except GrsaiError as exc:
+        raise GrsaiRemoteTaskError(str(exc), task_id=str(task_id)) from exc
 
-    if status == "running" or status not in TERMINAL_STATUSES:
-        data = wait_for_task(task_id, model=model, max_seconds=int(remaining))
-
-    status = (data.get("status") or "").lower()
-    if status == "violation":
-        raise GrsaiError(data.get("error") or "内容审核未通过")
-    if status != "succeeded":
-        err = data.get("error") or data.get("message") or f"生成失败: {status}"
+    try:
+        return relay_task_terminal_bytes(data, task_id=str(task_id))
+    except GrsaiRemoteTaskError:
+        raise
+    except GrsaiError as exc:
+        err = str(exc)
         if _task_error_retriable(data):
             raise GrsaiTransientError(
                 f"Grsai 上游超时或繁忙 ({err})，task={task_id}，images={img_summary}。"
                 "若控制台无参数，多为请求体过大未入库；已限制单次参考图张数并压缩参考图。"
-            )
-        raise GrsaiError(f"{err} (task={task_id}, images={img_summary})")
+            ) from exc
+        raise
 
-    results = data.get("results") or []
-    if not results or not results[0].get("url"):
-        raise GrsaiError("Grsai 成功但未返回图片 URL")
 
-    image_url = results[0]["url"]
-    return _download_result_image(image_url)
+def fetch_submitted_image(
+    task_id: str,
+    *,
+    image_url: str = "",
+    model: str | None = None,
+    max_seconds: int | None = None,
+) -> bytes:
+    """继续取回已经提交的中转站任务，不发起新的生图。"""
+    if image_url:
+        try:
+            return _download_result_image(image_url)
+        except GrsaiDownloadError as exc:
+            if not task_id:
+                raise GrsaiRemoteTaskError(str(exc), image_url=exc.image_url or image_url) from exc
+    if not task_id:
+        raise GrsaiError("没有可继续的中转站任务")
+    try:
+        data = wait_for_task(task_id, model=model, max_seconds=max_seconds)
+    except GrsaiError as exc:
+        raise GrsaiRemoteTaskError(str(exc), task_id=task_id, image_url=image_url) from exc
+    return relay_task_terminal_bytes(data, task_id=task_id)
 
 
 def generate_image_bytes(
@@ -460,41 +580,68 @@ def generate_image_bytes(
     shot_index: int | None = None,
 ) -> bytes:
     model = model or settings.GRSAI_IMAGE_MODEL
-    max_seconds = _per_image_max_seconds()
+    poll_cap = per_shot_active_poll_seconds(shot_index, model)
     extra_retries = max(0, int(getattr(settings, "GRSAI_PER_IMAGE_RETRIES", 1)))
     total_attempts = extra_retries + 1
 
     logger.info(
-        "Grsai generate model=%s shot_index=%s per_image_max=%ss attempts=%s",
+        "Grsai generate model=%s shot_index=%s active_poll_max=%ss attempts=%s",
         model,
         shot_index,
-        max_seconds,
+        poll_cap,
         total_attempts,
     )
 
     last_err: GrsaiError | None = None
     last_download_err: GrsaiDownloadError | None = None
+    held_task_id = ""
+    held_image_url = ""
     for attempt in range(total_attempts):
         try:
+            if held_task_id or held_image_url:
+                return fetch_submitted_image(
+                    held_task_id,
+                    image_url=held_image_url,
+                    model=model,
+                )
             return _generate_once(
                 prompt=prompt,
                 model=model,
                 reference_images=reference_images,
                 aspect_ratio=aspect_ratio,
-                max_seconds=max_seconds,
+                shot_index=shot_index,
             )
+        except GrsaiRemoteTaskError as exc:
+            held_task_id = exc.task_id or held_task_id
+            held_image_url = exc.image_url or held_image_url
+            last_err = exc
+            if is_per_shot_poll_timeout(exc) or attempt + 1 >= total_attempts:
+                raise
+            logger.warning(
+                "Grsai 已提交任务 shot_index=%s task=%s 第 %s/%s 次取回失败，不重新生图: %s",
+                shot_index,
+                held_task_id,
+                attempt + 1,
+                total_attempts,
+                exc,
+            )
+            time.sleep(min(2 * (attempt + 1), 6))
+            continue
         except GrsaiDownloadError as exc:
             last_download_err = exc
-            if attempt + 1 < total_attempts:
+            if exc.image_url and attempt + 1 < total_attempts:
                 logger.warning(
-                    "Grsai 下载成片失败 shot_index=%s 第 %s/%s 次，将重新提交生图: %s",
+                    "Grsai 下载成片失败 shot_index=%s 第 %s/%s 次，沿用已完成任务重试下载: %s",
                     shot_index,
                     attempt + 1,
                     total_attempts,
                     exc,
                 )
                 time.sleep(2)
-                continue
+                try:
+                    return _download_result_image(exc.image_url)
+                except GrsaiDownloadError:
+                    raise
             raise
         except GrsaiError as exc:
             last_err = exc

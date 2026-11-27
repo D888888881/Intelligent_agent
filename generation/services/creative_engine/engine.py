@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from generation.services.creative_engine.cohesion import apply_creative_set_cohesion, build_conversion_story_lock_en
-from generation.services.creative_engine.concepts import CREATIVE_CONCEPTS, DIMENSION_KEYS, concept_by_id
+from generation.services.creative_engine.concepts import (
+    CREATIVE_CONCEPTS,
+    DIMENSION_KEYS,
+    ZONE_FORBIDDEN_SCENE_SNIPPETS,
+    ZONE_PREFERRED_CONCEPT,
+    concept_by_id,
+)
 from generation.services.creative_engine.history import build_creative_history_avoid_en, load_creative_history
 from generation.services.visual_batch_variance import is_beauty_skincare_plan
 
 
 def _category_bucket(plan: dict) -> str:
+    analysis = plan.get("product_analysis") or {}
+    zone = (analysis.get("application_zone") or "").strip()
+    if zone in ("hair", "oral", "skin_face", "body_hand", "body_bath"):
+        return "beauty_skincare"
     cs = plan.get("category_strategy") or {}
     bucket = (cs.get("category_bucket") or "").strip()
     if bucket:
@@ -18,10 +28,15 @@ def _category_bucket(plan: dict) -> str:
     return "generic"
 
 
+def _application_zone(plan: dict) -> str:
+    return (plan.get("product_analysis") or {}).get("application_zone") or "generic"
+
+
 def _score_concept(
     concept: dict,
     *,
     category: str,
+    zone: str,
     success_ids: set[str],
     success_styles: set[str],
     attempt_ids: set[str],
@@ -40,6 +55,13 @@ def _score_concept(
         score += 25
     elif "generic" in aff:
         score += 5
+    preferred = ZONE_PREFERRED_CONCEPT.get(zone) or []
+    if cid in preferred:
+        score += 35 - preferred.index(cid) * 5
+    env = ((concept.get("dimensions") or {}).get("scene_environment") or "").lower()
+    for bad in ZONE_FORBIDDEN_SCENE_SNIPPETS.get(zone, ()):
+        if bad in env:
+            score -= 50
     return score
 
 
@@ -70,11 +92,13 @@ def pick_creative_concept(
             success_styles.add(h["visual_style"])
 
     category = _category_bucket(plan)
+    zone = _application_zone(plan)
     ranked: list[tuple[int, dict]] = []
     for c in CREATIVE_CONCEPTS:
         sc = _score_concept(
             c,
             category=category,
+            zone=zone,
             success_ids=success_ids,
             success_styles=success_styles,
             attempt_ids=attempt_ids,
@@ -109,6 +133,24 @@ def _concept_mandate_en(concept: dict) -> str:
         "Do NOT produce frames that only swap background hue with identical centered packshot pose."
     )
     return " ".join(lines)
+
+
+def _reconcile_concept_with_product_zone(plan: dict, concept: dict) -> dict:
+    zone = _application_zone(plan)
+    if zone == "generic":
+        return concept
+    env = ((concept.get("dimensions") or {}).get("scene_environment") or "").lower()
+    forbidden = ZONE_FORBIDDEN_SCENE_SNIPPETS.get(zone, ())
+    if any(bad in env for bad in forbidden):
+        concept = dict(concept)
+        dims = dict(concept.get("dimensions") or {})
+        alt = concept_by_id("bathroom_wellness")
+        if alt and zone in ("hair", "oral", "skin_face", "body_hand"):
+            dims.update(alt.get("dimensions") or {})
+            concept["dimensions"] = dims
+            concept["story_theme_en"] = alt.get("story_theme_en") or concept.get("story_theme_en")
+            concept["color_mood_en"] = alt.get("color_mood_en") or concept.get("color_mood_en")
+    return concept
 
 
 def _apply_shot_concept_hints(plan: dict, concept: dict) -> None:
@@ -151,6 +193,7 @@ def apply_creative_engine(plan: dict, *, job) -> dict:
     concept = concept_by_id(reuse_id) if reuse_id else None
     if not concept:
         concept = pick_creative_concept(plan, batch_index=batch_index, history=history)
+    concept = _reconcile_concept_with_product_zone(plan, concept)
 
     plan["creative_concept_id"] = concept["id"]
     plan["creative_concept_label_zh"] = concept["label_zh"]

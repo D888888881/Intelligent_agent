@@ -161,6 +161,12 @@ GEN_DEFAULT_IMAGE_COUNT = int(os.getenv("GEN_DEFAULT_IMAGE_COUNT", "9"))
 GEN_MAX_IMAGE_COUNT = int(os.getenv("GEN_MAX_IMAGE_COUNT", "12"))
 GEN_MAX_REFERENCE_IMAGES = int(os.getenv("GEN_MAX_REFERENCE_IMAGES", "8"))
 GEN_MAX_QUEUE_SIZE = int(os.getenv("GEN_MAX_QUEUE_SIZE", "50"))
+# P0 角度差异：创意镜(≥3) 不附参考图，减轻抄拍摄角；关闭则恢复每镜 identity 参考
+GEN_SHOT_REF_TIERED = os.getenv("GEN_SHOT_REF_TIERED", "True").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # 单个会话消息分页（中间对话区，非左侧会话列表）
 CHAT_MESSAGE_INITIAL_PAGE_SIZE = int(os.getenv("CHAT_MESSAGE_INITIAL_PAGE_SIZE", "10"))
@@ -171,7 +177,7 @@ CHAT_MESSAGE_ALL_MAX = int(os.getenv("CHAT_MESSAGE_ALL_MAX", "500"))
 # OpenAI 兼容中转（对话 / 视觉策划）
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-6.1-terra")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-6.2-sol")
 OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "dall-e-3")
 OPENAI_IMAGE_BACKEND = os.getenv("OPENAI_IMAGE_BACKEND", "grsai")
@@ -179,7 +185,7 @@ OPENAI_IMAGE_BACKEND = os.getenv("OPENAI_IMAGE_BACKEND", "grsai")
 # Grsai 生图（nano-banana / gpt-image-2 系列）
 GRSAI_BASE_URL = os.getenv("GRSAI_BASE_URL", "https://grsai.dakka.com.cn")
 GRSAI_API_KEY = os.getenv("GRSAI_API_KEY", "")
-GRSAI_IMAGE_MODEL = os.getenv("GRSAI_IMAGE_MODEL", "nano-banana-2")
+GRSAI_IMAGE_MODEL = os.getenv("GRSAI_IMAGE_MODEL", "gpt-image-2.5")
 GRSAI_IMAGE_SIZE = os.getenv("GRSAI_IMAGE_SIZE", "2K")
 GRSAI_ASPECT_RATIO = os.getenv("GRSAI_ASPECT_RATIO", "1:1")
 GRSAI_REPLY_TYPE = os.getenv("GRSAI_REPLY_TYPE", "async")
@@ -200,6 +206,10 @@ GRSAI_REF_MAX_EDGE = int(os.getenv("GRSAI_REF_MAX_EDGE", "1280"))
 GRSAI_REF_MAX_BYTES = int(os.getenv("GRSAI_REF_MAX_BYTES", "850000"))
 GRSAI_POST_READ_TIMEOUT = float(os.getenv("GRSAI_POST_READ_TIMEOUT", "180"))
 GRSAI_PER_IMAGE_MAX_SECONDS = int(os.getenv("GRSAI_PER_IMAGE_MAX_SECONDS", "180"))
+# 第 8、9 张不参与超时回收，本地轮询可稍长
+GRSAI_PER_IMAGE_LATE_MAX_SECONDS = int(os.getenv("GRSAI_PER_IMAGE_LATE_MAX_SECONDS", "240"))
+# 第 9 张结束后回收 1–7 超时任务：仍在 running 时再等的秒数
+GRSAI_DEFERRED_RECOVERY_WAIT_SECONDS = int(os.getenv("GRSAI_DEFERRED_RECOVERY_WAIT_SECONDS", "30"))
 # 单张失败后额外重试次数（1 = 最多共 2 次尝试）
 GRSAI_PER_IMAGE_RETRIES = int(os.getenv("GRSAI_PER_IMAGE_RETRIES", "1"))
 # Grsai 任务成功后，从 CDN 拉取成片的重试（SSL 握手超时等多发生在此步，中转站仍显示生图成功）

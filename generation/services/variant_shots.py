@@ -71,6 +71,20 @@ def sync_product_variants_from_references(plan: dict, attachment_count: int) -> 
     return plan
 
 
+def white_bg_variant_lineup_en(count: int) -> str:
+    """同一链接的多个款式：白底图是一张照片里的整排，不是只留一个主商品。"""
+    n = max(2, int(count or 2))
+    return (
+        f"Pure #FFFFFF seamless studio catalog photograph of ALL {n} style variants "
+        "of this ONE product, one unit of each, standing UPRIGHT in a single row. "
+        "Each unit copies one attached reference: packaging, color, cap, and shape. "
+        "Do not drop a variant, do not clone one style to fill the row, and do not invent an extra style. "
+        "Front view, eye-level, even softbox light, soft contact shadow. "
+        "No props, no people, no lifestyle background, no marketing text, no icons. "
+        "One photograph of the row. Not a panel collage, not a nine-grid, not a single centered SKU."
+    )
+
+
 def apply_white_bg_all_references(plan: dict, attachment_count: int) -> dict:
     """白底 catalog 镜头需展示全部款式时，上传全部参考图（受 showcase 上限约束）。"""
     if attachment_count <= 1:
@@ -82,23 +96,47 @@ def apply_white_bg_all_references(plan: dict, attachment_count: int) -> dict:
         if isinstance(variants, list) and variants:
             catalog = variants_catalog_text(variants)
             plan["variants_catalog_en"] = catalog
+    lineup = white_bg_variant_lineup_en(attachment_count)
     for shot in shots:
         role = (shot.get("role") or "").strip()
-        idx = int(shot.get("index") or 0)
-        if role == "white_bg_catalog" or idx == 2:
-            shot["use_all_reference_images"] = True
-            shot.setdefault("variant_label", "All colorways / styles lineup")
-            if catalog:
-                shot["multi_variant_catalog_en"] = catalog
-            mandate = (shot.get("composition_mandate") or "").strip()
-            extra = (
-                f"WHITE BG MULTI-SKU: include all {attachment_count} distinct product variants "
-                f"from the {attachment_count} reference images in one clean catalog layout "
-                "(side-by-side or staggered), each SKU separate — no collage grid, no missing variant."
-            )
+        try:
+            idx = int(shot.get("index") or 0)
+        except (TypeError, ValueError):
+            idx = 0
+        if role != "white_bg_catalog" and idx != 2:
+            continue
+        shot["role"] = "white_bg_catalog"
+        shot["use_all_reference_images"] = True
+        shot["variant_label"] = "All colorways / styles lineup"
+        shot.pop("featured_variant_index", None)
+        shot.pop("variant_identity_extra", None)
+        if catalog:
+            shot["multi_variant_catalog_en"] = catalog
+        shot["prompt_en"] = lineup
+        shot["product_pose_lock_en"] = (
+            "INDEX 2 — Every uploaded style stands upright on pure white, in one row. "
+            "Not one centered SKU."
+        )
+        shot["orientation_lock"] = (
+            "Each variant faces the camera upright, 0° tilt, arranged left to right in one row."
+        )
+        shot["scene_zh"] = "纯白底，同一产品的全部款式并排"
+        shot["composition_zh"] = f"白底上一字排开 {attachment_count} 个不同款式，无文案"
+        mandate = (shot.get("composition_mandate") or "").strip()
+        extra = (
+            f"WHITE BG MULTI-SKU: include all {attachment_count} distinct product variants "
+            f"from the {attachment_count} reference images in one clean catalog row. "
+            "Each SKU is a different style. No missing variant, no cloned duplicate, no panel collage."
+        )
+        if "WHITE BG MULTI-SKU" not in mandate:
             shot["composition_mandate"] = f"{mandate} {extra}".strip() if mandate else extra
     plan["multi_variant_listing"] = True
     plan["variant_count"] = max(int(plan.get("variant_count") or 0), attachment_count)
+    plan["variant_family_lock_en"] = (
+        f"These {attachment_count} uploads are style variants of ONE product on ONE listing. "
+        "They are not unrelated products. The white catalog frame shows every style together. "
+        "Each other frame features one of those styles and keeps the same product type."
+    )
     return plan
 
 
@@ -152,7 +190,12 @@ def assign_shot_variants(plan: dict) -> dict:
             shot["variant_in_frame_position"] = pos[:200]
 
     if showcase is not None:
-        showcase["role"] = "multi_variant_showcase"
+        try:
+            showcase_idx = int(showcase.get("index") or 0)
+        except (TypeError, ValueError):
+            showcase_idx = 0
+        if showcase_idx != 2 and (showcase.get("role") or "") != "white_bg_catalog":
+            showcase["role"] = "multi_variant_showcase"
         showcase["use_all_reference_images"] = True
         showcase["variant_label"] = "All colorways / styles lineup"
         showcase["multi_variant_catalog_en"] = catalog

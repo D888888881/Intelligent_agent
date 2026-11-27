@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from django.conf import settings
 
-from generation.services.ecommerce_strategy import strategy_brief_by_index
+from generation.services.ecommerce_strategy import TK_MX_NINE_FRAME_MATRIX, strategy_brief_by_index
 
 LISTING_IMAGE_DOCTRINE_ZH = (
     "全套 9 张均为 TikTok Shop México Listing 主图（1 场景引流主图 + 1 白底合规 + 7 职能详情），"
@@ -24,7 +24,7 @@ AMAZON_ARTICLE_MATRIX_HINT_ZH = (
 )
 
 ARTICLE_MATRIX_HINT_ZH = (
-    "职能映射：①hero_hook=场景分层主图(非白底)；②white_bg=合规白底；③pain_empathy=轮换(卖点解决|细节特写)；"
+    "职能映射（每镜单一焦点）：①hero_hook=场景分层主图(非白底)；②white_bg=合规白底；③pain_empathy=轮换(卖点解决|细节特写|成分无瓶)；"
     "④usp_primary=使用前→使用后痛点对比(纯视觉·禁对比文字)；⑤usp_secondary=批次轮换(品类对比|规格|套装|步骤|核心功能|成分整图无产品)；"
     "⑦ease_objection=人群场景种草(真人使用中·TikTok真实感)；⑧value_stack=规格或套装(value_bundle/specs_features)；"
     "⑨lifestyle_payoff=强转化收尾(日常/送礼/家庭/值得购买/卖点总结/愿景生活·轮换；营造购买氛围，非纯产品复刻)。"
@@ -38,12 +38,11 @@ USP_PRIMARY_PAIN_VISUAL = (
 )
 
 TRUST_QUALITY_REAL_LIFE_MX = (
-    "FRAME 6 — Real-life trust context: hero SKU in an authentic Mexican daily environment "
-    "(family living room, bathroom vanity, bedroom, kitchen, sidewalk/street café, or home-office desk). "
-    "Natural light, believable props, tidy-but-lived-in styling; product clearly visible and quality-forward. "
-    "Environment tells trust and fit-for-real-life — NOT isolated clinical macro on pure white; "
-    "NOT the same messy problem still as frame 3; NOT TikTok creator portrait like frame 7; "
-    "no dominant full face."
+    "FRAME 6 — Usage benefit payoff: what the user gains from using the product daily "
+    "(comfort, freshness, softness, confidence — from product_analysis). "
+    "Model may appear (face or half-body) with product in use or post-use satisfaction. "
+    "MANDATORY Spanish benefit headline on image. "
+    "NOT frame-4 before/after split; NOT frame-7 crowd UGC duplicate."
 )
 
 EASE_OBJECTION_TIKTOK_SOCIAL_PROOF = (
@@ -66,9 +65,10 @@ HERO_LAYERED_MX_COMPOSITION = (
     f"{HERO_VISUAL_IMPACT_EN} "
     "Three layers: (1) BACKGROUND — vivid Mexican lifestyle scene or color-accent environment, "
     "bright natural light, shallow DOF bokeh, authentic context that pops on mobile. "
-    "(2) FOREGROUND PRODUCT — dominant hero SKU with commercial clarity, soft grounding shadow. "
-    "(3) INFO MODULES — top: bold Spanish headline (2 lines max); bottom: 3 circular ICON bullets (2–3 words). "
-    "Typography supports the visual punch — visual impact comes first. "
+    "(2) FOREGROUND PRODUCT — dominant hero SKU with commercial clarity, soft grounding shadow; "
+    "background color grade MUST match the locked listing palette/temperature used on frames 3–9. "
+    "(3) INFO PANEL — a large Spanish block covering about one third: bold headline, a two-line introduction, "
+    "and three proof lines about the same benefit. Type is big enough to read on a phone. "
     "If human present: hands/partial only; face must NOT overpower product. "
     "No collage, no nine-grid, no Chinese text, no exaggerated medical claims."
 )
@@ -79,23 +79,37 @@ WHITE_BG_NO_TEXT_EN = (
     "Only the product and its authentic factory packaging/label as photographed — no designed overlay text."
 )
 
+WHITE_BG_SCENE_PROMPT_EN = (
+    "Pure #FFFFFF seamless studio catalog photograph of the hero SKU only. "
+    "Straight-on front, eye-level, perfectly centered, symmetrical, soft even softbox lighting, "
+    "Product MUST stand UPRIGHT vertical front-facing — 0° roll, 0° tilt, cap/lid up, label plane "
+    "parallel to camera; FORBIDDEN diagonal lean, lying on side, 25–45° art angle, or dynamic tilt. "
+    "no props, no lifestyle environment, no people, no secondary products, no marketing graphics. "
+    "NOT a scroll-stopper hero, NOT before/after, NOT comparison layout, NOT ingredient flat-lay."
+)
+
+WHITE_BG_UPRIGHT_POSE_LOCK_EN = (
+    "INDEX 2 POSE LOCK — Upright compliance catalog ONLY: vertical standing packshot on white, "
+    "front label to camera, zero tilt/slant/roll; overrides any other-frame diagonal product staging rules."
+)
+
 LAYOUT_MANDATES = {
     "specs_features": (
         "LAYOUT — Specs & functions frame: show size/capacity/color/kit contents or step sequence "
-        "in one clean 1:1 photo; product + minimal callout labels in Spanish; not a white catalog clone."
+        "in one filled 1:1 photo; product plus a large Spanish text panel; not a white catalog clone."
     ),
     "value_bundle": (
         "LAYOUT — Value bundle frame: kit contents, quantity, gift-worth narrative; "
         "warm premium styling, distinct from index 2 white catalog."
     ),
     "benefit_summary": (
-        "LAYOUT — Benefit summary frame: clean elevated design listing 3–5 core advantages "
-        "as short Spanish bullet lines integrated in the image (not a collage grid); product visible."
+        "LAYOUT — Benefit summary frame: filled scene plus a large Spanish text panel that explains "
+        "this frame's one benefit (headline, two-line introduction, three proof lines); product visible."
     ),
     "conversion_close": (
         "LAYOUT — Conversion closing frame: PURCHASE ATMOSPHERE first (daily routine / gift moment / "
         "family home / smart-buy confidence / lifestyle aspiration) — product supports the story, "
-        "not a lone packshot repeat of frame 1. Short Spanish CTA; premium simplicity."
+        "not a lone packshot repeat of frame 1. Large Spanish text panel; the scene fills the frame."
     ),
 }
 
@@ -247,11 +261,20 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
         hero_px = 1280
     plan["tk_mx_hero_output_pixels"] = hero_px
 
+    fixed_by_index = {int(f["index"]): f for f in TK_MX_NINE_FRAME_MATRIX}
+
     for shot in plan.get("shots") or []:
         try:
             idx = int(shot.get("index") or 0)
         except (TypeError, ValueError):
             continue
+        frame_fix = fixed_by_index.get(idx) or {}
+        if frame_fix.get("frame_contract") == "fixed":
+            shot["role"] = frame_fix["role"]
+            shot["frame_contract"] = "fixed"
+            shot["marketing_pillar"] = frame_fix.get("marketing_pillar", shot.get("marketing_pillar"))
+            shot["visual_archetype"] = frame_fix.get("visual_archetype", shot.get("visual_archetype"))
+            shot["scene_family"] = frame_fix.get("scene_family", shot.get("scene_family"))
         role = (shot.get("role") or "").strip()
         brief = briefs.get(strategy_brief_index_for_shot(plan, idx)) or {}
         _copy_brief_fields(shot, brief)
@@ -267,8 +290,15 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
             shot["hero_output_size"] = hero_px
             shot.setdefault("human_cast_mode", "none")
             shot["hero_visual_impact_lock"] = HERO_VISUAL_IMPACT_EN
+            harmony = (plan.get("listing_color_temperature_lock_en") or "").strip()
+            if harmony:
+                shot["hero_color_harmony_en"] = (
+                    f"HERO must share the same color temperature and palette as the full 9-frame set. {harmony[:500]}"
+                )
 
         if role == "white_bg_catalog" or idx == 2:
+            shot["role"] = "white_bg_catalog"
+            shot["frame_contract"] = "fixed"
             existing_comp = (shot.get("composition_mandate") or "").strip()
             shot["composition_mandate"] = (
                 f"{existing_comp} {WHITE_BG_NO_TEXT_EN}".strip()
@@ -276,12 +306,26 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
                 else WHITE_BG_NO_TEXT_EN
             )
             shot["white_bg_text_lock"] = WHITE_BG_NO_TEXT_EN
+            shot["prompt_en"] = WHITE_BG_SCENE_PROMPT_EN
+            shot["product_pose_lock_en"] = WHITE_BG_UPRIGHT_POSE_LOCK_EN
+            shot["orientation_lock"] = (
+                "front orthographic catalog, product vertical upright, no yaw/pitch/roll on package"
+            )
+            shot["scene_zh"] = "纯白底合规产品图"
+            shot["composition_zh"] = "正面直立居中纯白底，无场景无文案"
             shot["human_cast_mode"] = "none"
+            extra_neg = (shot.get("negative_extra") or "").strip()
+            shot["negative_extra"] = (
+                f"{extra_neg}, tilted product, diagonal lean, lying flat, 30 degree angle, dynamic hero tilt"
+            ).strip(", ")
             shot["headline_es"] = ""
             shot["subhead_es"] = ""
             shot["key_message_es"] = ""
             shot["prompt_es"] = ""
             shot["icon_bullets_es"] = []
+            shot["diversity_lock"] = (
+                "Fixed compliance white catalog — NOT marketing hero, NOT lifestyle, NOT comparison."
+            )
 
         if role == "usp_primary" or idx == 4:
             existing_comp = (shot.get("composition_mandate") or "").strip()
@@ -291,7 +335,17 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
                     if existing_comp
                     else USP_PRIMARY_PAIN_VISUAL
                 )
-            shot.setdefault("human_cast_mode", "none")
+            analysis = plan.get("product_analysis") or {}
+            zone = (analysis.get("application_zone") or "").strip()
+            from generation.services.product_usage_semantics import zone_requires_model
+
+            if zone_requires_model(zone):
+                shot.setdefault("human_cast_mandatory", True)
+                if (shot.get("human_cast_mode") or "").lower() in ("none", ""):
+                    shot["human_cast_mode"] = "full" if zone == "body_bath" else "face"
+            else:
+                shot["human_cast_mandatory"] = False
+                shot["human_cast_mode"] = "none"
 
         if role == "trust_quality" or idx == 6:
             existing_comp = (shot.get("composition_mandate") or "").strip()
@@ -301,7 +355,7 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
                     if existing_comp
                     else TRUST_QUALITY_REAL_LIFE_MX
                 )
-            shot.setdefault("human_cast_mode", "none")
+            shot.setdefault("human_cast_mode", "face")
 
         if role == "ease_objection" or idx == 7:
             existing_comp = (shot.get("composition_mandate") or "").strip()
@@ -311,7 +365,8 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
                     if existing_comp
                     else EASE_OBJECTION_TIKTOK_SOCIAL_PROOF
                 )
-            shot.setdefault("human_cast_mode", "full")
+            shot["human_cast_mode"] = "full"
+            shot["human_cast_mandatory"] = True
 
         subtype = (shot.get("layout_subtype") or brief.get("layout_subtype") or "").strip()
         if not subtype:
@@ -323,6 +378,59 @@ def apply_tk_mx_listing_plan(plan: dict) -> dict:
                 extra = (shot.get("composition_mandate") or "").strip()
                 shot["composition_mandate"] = f"{extra} {mandate}".strip() if extra else mandate
 
+    return plan
+
+
+def reassert_white_bg_catalog_shots(plan: dict) -> dict:
+    """机位多样性之后仍强制图2直立白底，避免 reference/九图斜放文案覆盖。"""
+    for shot in plan.get("shots") or []:
+        try:
+            idx = int(shot.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        role = (shot.get("role") or "").strip()
+        if idx != 2 and role != "white_bg_catalog":
+            continue
+        shot["role"] = "white_bg_catalog"
+        shot["product_pose_lock_en"] = WHITE_BG_UPRIGHT_POSE_LOCK_EN
+        shot["orientation_lock"] = (
+            "front orthographic catalog, product vertical upright, no yaw/pitch/roll on package"
+        )
+        shot["prompt_en"] = WHITE_BG_SCENE_PROMPT_EN
+        shot["human_cast_mode"] = "none"
+        shot.pop("product_action_lock_en", None)
+        extra_neg = (shot.get("negative_extra") or "").strip()
+        tilt_neg = "tilted product, diagonal lean, lying flat, 30 degree angle, dynamic hero tilt"
+        if tilt_neg not in extra_neg.lower():
+            shot["negative_extra"] = f"{extra_neg}, {tilt_neg}".strip(", ")
+
+    return plan
+
+
+def reassert_tk_mx_invariants(plan: dict) -> dict:
+    """确认生图最后一轮：图4固定前后对比无字、图7强制模特。"""
+    from generation.services.frame4_flex import FRAME_4_VARIANT_ID, apply_frame4_flex_variant
+
+    if (plan.get("plan_template") or "") != "tk_mx_ecommerce_9":
+        return plan
+    plan = apply_frame4_flex_variant(plan)
+    from generation.services.listing_frame6_benefit import apply_tk_frame6_benefit
+
+    plan = apply_tk_frame6_benefit(plan)
+    for shot in plan.get("shots") or []:
+        try:
+            idx = int(shot.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        if idx == 4:
+            shot["role"] = "usp_primary"
+            shot["frame4_variant"] = FRAME_4_VARIANT_ID
+            shot["layout_subtype"] = FRAME_4_VARIANT_ID
+        if idx == 7:
+            shot["role"] = "ease_objection"
+            shot["human_cast_mode"] = "full"
+            shot["human_cast_mandatory"] = True
+    plan["shots"] = plan.get("shots") or []
     return plan
 
 

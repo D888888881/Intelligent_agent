@@ -34,6 +34,8 @@ let state = {
   /** 生图确认后短时间内禁止自动贴底/重载抢滚动 */
   generationScrollPinJobId: null,
   generationScrollPinUntil: 0,
+  /** 用户手动滚动后不再把视口拽回生图消息 */
+  genScrollFollowPaused: false,
   /** 当前会话用户关注的生图 job（完成时优先锚定） */
   focusGenJobId: null,
   /** 已处理终态的 job，避免 SSE+轮询重复全量重绘 */
@@ -55,8 +57,8 @@ let state = {
   convSearchQuery: "",
   convSearchOpen: false,
   lightboxRefine: null,
-  /** 局部修复「新上传参考」模式下的 Attachment id */
-  lightboxRefineUpload: null,
+  /** 局部修复「新上传参考」：按上传顺序的 Attachment 列表 */
+  lightboxRefineUploads: [],
   lightboxRefinePoll: null,
   adminUsers: {
     q: "",
@@ -669,6 +671,7 @@ function finishThreadPrepare() {
 /** 渲染时 scrollTop 仍在顶部，必须锚到底部后再开启视口懒加载 */
 function endThreadPrepare() {
   const container = document.getElementById("thread-container");
+  container?.classList.remove("thread-preparing");
   if (isThreadScrollLocked()) {
     finishThreadPrepare();
     enforceThreadScrollLock();
@@ -678,6 +681,7 @@ function endThreadPrepare() {
     finishThreadPrepare();
     const jid = state.generationScrollPinJobId ?? state.focusGenJobId;
     if (jid && !isJobDomUpdateFrozen(jid)) scrollToGenerationJobTurn(jid);
+    else scrollThreadToBottom({ force: true });
     return;
   }
   if (!container) {
@@ -685,24 +689,19 @@ function endThreadPrepare() {
     return;
   }
 
+  scrollThreadToBottom({ force: true });
   let attempts = 0;
   const tryAnchor = () => {
-    scrollThreadToBottom();
+    scrollThreadToBottom({ force: true });
     attempts += 1;
-    if (isThreadAnchored() || attempts >= 30) {
-      scrollThreadToBottom();
+    if (isThreadAnchored() || attempts >= 12) {
+      scrollThreadToBottom({ force: true });
       finishThreadPrepare();
-      const timers = [];
-      timers.push(setTimeout(scrollThreadToBottom, 80));
-      timers.push(setTimeout(scrollThreadToBottom, 200));
-      timers.push(setTimeout(scrollThreadToBottom, 500));
-      state.threadPrepareScrollTimerIds = timers;
+      armStickToBottom();
       return;
     }
     requestAnimationFrame(tryAnchor);
   };
-
-  scrollThreadToBottom();
   requestAnimationFrame(tryAnchor);
 }
 
@@ -725,10 +724,12 @@ function renderMessages(messages, options = {}) {
   if (shouldBlockThreadFullReload() && !options.forceFullRender) {
     return;
   }
-  const preserveScroll = !!options.preserveScroll;
-  const anchorJobId = options.anchorGenerationJobId
-    ? Number(options.anchorGenerationJobId)
-    : null;
+  const stickToBottom = !!options.stickToBottom;
+  const preserveScroll = !!options.preserveScroll && !stickToBottom;
+  const anchorJobId =
+    !stickToBottom && options.anchorGenerationJobId
+      ? Number(options.anchorGenerationJobId)
+      : null;
   if (anchorJobId && !isThreadScrollLocked()) {
     pinScrollToGenerationJob(anchorJobId, 4, 180000);
   }
@@ -752,6 +753,7 @@ function renderMessages(messages, options = {}) {
   if (preserveScroll && !anchorJobId) {
     finishThreadPrepare();
     if (container) {
+      markProgrammaticThreadScroll();
       container.scrollTop = prevScroll + (container.scrollHeight - prevHeight);
     }
   } else if (anchorJobId) {
@@ -899,14 +901,19 @@ function prependMessagesDom(messages) {
   const box = document.getElementById("messages");
   const container = document.getElementById("thread-container");
   if (!box || !messages?.length) return;
+  const existing = new Set(
+    [...box.querySelectorAll(".turn[data-message-id]")].map((el) => el.dataset.messageId)
+  );
+  const fresh = messages.filter((m) => m.id == null || !existing.has(String(m.id)));
+  if (!fresh.length) return;
   const prevHeight = container.scrollHeight;
   const sentinel = box.querySelector("#load-older-sentinel");
   const anchor = sentinel ? sentinel.nextSibling : box.firstChild;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const turn = buildMessageTurn(messages[i]);
-    box.insertBefore(turn, anchor);
+  for (const message of fresh) {
+    box.insertBefore(buildMessageTurn(message), anchor);
   }
   box.dataset.expandedOlder = "1";
+  markProgrammaticThreadScroll();
   container.scrollTop += container.scrollHeight - prevHeight;
   LazyMedia.scan(box);
   updateLoadOlderSentinel();
@@ -916,14 +923,33 @@ async function loadOlderMessages() {
   const convId = state.currentId;
   if (!convId || state.loadingOlder) return;
   const page = state.messagePage[convId];
-  if (!page?.has_more_older) return;
+  if (!page?.has_more_older || !page.oldest_message_id) return;
 
   state.loadingOlder = true;
   page.loadingOlder = true;
   updateLoadOlderSentinel();
 
   try {
-    await loadConversationDetail(convId, { preserveScroll: true });
+    const detail = await api(
+      `/api/chat/conversations/${convId}/?before_id=${page.oldest_message_id}&limit=${MESSAGE_OLDER_PAGE_SIZE}`
+    );
+    if (state.currentId !== convId) return;
+    const older = sortMessagesForDisplay(detail.messages || []);
+    const info = detail.message_pagination || {};
+    state.messagePage[convId] = {
+      has_more_older: Boolean(info.has_more_older) && older.length > 0,
+      oldest_message_id: older[0]?.id || page.oldest_message_id,
+      newest_message_id: page.newest_message_id,
+      limit: info.limit || MESSAGE_OLDER_PAGE_SIZE,
+      loadingOlder: false,
+    };
+    const cached = ChatCache.getDetail(convId)?.detail;
+    if (cached) {
+      cached.messages = sortMessagesForDisplay([...(cached.messages || []), ...older]);
+      cached.message_pagination = { ...state.messagePage[convId] };
+      ChatCache.setDetail(convId, cached);
+    }
+    prependMessagesDom(older);
   } finally {
     state.loadingOlder = false;
     if (state.messagePage[convId]) state.messagePage[convId].loadingOlder = false;
@@ -935,6 +961,7 @@ function onThreadScrollNearTop() {
   if (state.threadAnchoring || isGenerationScrollPinned()) return;
   const container = document.getElementById("thread-container");
   if (!container || container.scrollTop > 80) return;
+  if (container.scrollHeight <= container.clientHeight + 8) return;
   loadOlderMessages().catch(() => {});
 }
 
@@ -961,6 +988,7 @@ function preserveThreadScroll(ms = 1500) {
 function beginThreadScrollLock(jobId, { markConfirming = false, scrollBurstMs = 1500 } = {}) {
   const container = document.getElementById("thread-container");
   if (!container) return;
+  state.genScrollFollowPaused = false;
   state.threadScrollLockTop = container.scrollTop;
   state.threadScrollLockUntil = Date.now() + scrollBurstMs;
   if (jobId) {
@@ -971,9 +999,23 @@ function beginThreadScrollLock(jobId, { markConfirming = false, scrollBurstMs = 
   }
 }
 
-function releaseThreadScrollLockFromUser() {
-  if (!isThreadScrollLocked()) return;
+function markProgrammaticThreadScroll() {
+  state._threadScrollProgrammatic = true;
+  clearTimeout(state._progScrollTimer);
+  state._progScrollTimer = setTimeout(() => {
+    state._threadScrollProgrammatic = false;
+  }, 120);
+}
+
+function pauseGenerationScrollFollow() {
+  if (state._threadScrollProgrammatic) return;
+  state.genScrollFollowPaused = true;
+  releaseOpenThreadStick();
   clearThreadScrollLock();
+}
+
+function releaseThreadScrollLockFromUser() {
+  pauseGenerationScrollFollow();
 }
 
 /** 发送生图后：把本地乐观用户气泡与后端 user_message 对齐，避免再全量拉会话 */
@@ -1042,10 +1084,12 @@ function scheduleGalleryLayoutReanchor(jobId) {
 }
 
 function enforceThreadScrollLock() {
+  if (state.genScrollFollowPaused) return;
   if (!isThreadScrollLocked()) return;
   const container = document.getElementById("thread-container");
   if (!container || state.threadScrollLockTop == null) return;
   if (Math.abs(container.scrollTop - state.threadScrollLockTop) > 1) {
+    markProgrammaticThreadScroll();
     container.style.scrollBehavior = "auto";
     container.scrollTop = state.threadScrollLockTop;
     container.style.scrollBehavior = "";
@@ -1080,24 +1124,53 @@ function generationJobTurnIsLatest(jobId) {
   return !!(turn && lastTurn && turn === lastTurn);
 }
 
-function scrollThreadToBottom() {
-  if (state.threadAnchoring || isThreadScrollLocked()) return;
-  if (
-    isGenerationScrollPinned() &&
-    !generationJobTurnIsLatest(state.generationScrollPinJobId)
-  ) {
-    return;
+function scrollThreadToBottom({ force = false } = {}) {
+  if (!force) {
+    if (state.genScrollFollowPaused) return;
+    if (state.threadAnchoring || isThreadScrollLocked()) return;
+    if (
+      isGenerationScrollPinned() &&
+      !generationJobTurnIsLatest(state.generationScrollPinJobId)
+    ) {
+      return;
+    }
   }
   const container = document.getElementById("thread-container");
   if (!container) return;
+  markProgrammaticThreadScroll();
   container.style.scrollBehavior = "auto";
   container.scrollTop = maxThreadScrollTop();
+  container.style.scrollBehavior = "";
+}
+
+function releaseOpenThreadStick() {
+  state.openThreadStickBottomUntil = 0;
+  state._stickBottomObserver?.disconnect();
+  state._stickBottomObserver = null;
+  clearTimeout(state._stickBottomTimer);
+}
+
+/** 打开会话后短时间内贴住底部，图片撑开高度时也保持在最底下。 */
+function armStickToBottom() {
+  state.openThreadStickBottomUntil = Date.now() + 1600;
+  scrollThreadToBottom({ force: true });
   const box = document.getElementById("messages");
-  const lastTurn = box?.querySelector(".turn:last-of-type");
-  if (lastTurn) {
-    lastTurn.scrollIntoView({ block: "end", inline: "nearest", behavior: "auto" });
-    container.scrollTop = maxThreadScrollTop();
-  }
+  if (!box) return;
+  state._stickBottomObserver?.disconnect();
+  const observer = new ResizeObserver(() => {
+    if (!state.openThreadStickBottomUntil || Date.now() > state.openThreadStickBottomUntil) {
+      releaseOpenThreadStick();
+      return;
+    }
+    scrollThreadToBottom({ force: true });
+  });
+  observer.observe(box);
+  state._stickBottomObserver = observer;
+  clearTimeout(state._stickBottomTimer);
+  state._stickBottomTimer = setTimeout(() => {
+    scrollThreadToBottom({ force: true });
+    releaseOpenThreadStick();
+  }, 1600);
 }
 
 /** 进入/刷新会话时滚到最新一条 */
@@ -1124,6 +1197,7 @@ function primaryGenerationJobBody(jobId) {
 }
 
 function shouldHoldGenerationScroll(jobId) {
+  if (state.genScrollFollowPaused) return false;
   if (isThreadScrollLocked() || isJobDomUpdateFrozen(jobId)) return false;
   return (
     isGenerationScrollPinned() ||
@@ -1138,6 +1212,7 @@ function maybeReanchorGenerationJobTurn(jobId) {
 
 /** 将视口滚到指定生图任务；若该 job 在会话末尾则贴底（靠近输入框） */
 function scrollToGenerationJobTurn(jobId, { preferBottom = true } = {}) {
+  if (state.genScrollFollowPaused) return false;
   if (isThreadScrollLocked() && Number(state.generationScrollPinJobId) === Number(jobId)) {
     enforceThreadScrollLock();
     return true;
@@ -1146,6 +1221,7 @@ function scrollToGenerationJobTurn(jobId, { preferBottom = true } = {}) {
   const body = primaryGenerationJobBody(jobId);
   if (!container || !body) return false;
   const turn = body.closest(".turn");
+  markProgrammaticThreadScroll();
   container.style.scrollBehavior = "auto";
   if (preferBottom && generationJobTurnIsLatest(jobId) && turn) {
     turn.scrollIntoView({ block: "end", inline: "nearest", behavior: "auto" });
@@ -1170,6 +1246,7 @@ function pinScrollToGenerationJob(jobId, maxAttempts = 5, pinMs = 120000) {
   clearThreadPrepareScrollTimers();
   let attempt = 0;
   const tick = () => {
+    if (state.genScrollFollowPaused) return;
     if (state.generationScrollPinJobId == null || Number(state.generationScrollPinJobId) !== Number(jobId)) {
       return;
     }
@@ -1203,6 +1280,8 @@ function scrollToPlanConfirmTurn(jobId) {
   if (!container || !turn) return;
   state.planConfirmAnchored[jobId] = true;
   requestAnimationFrame(() => {
+    if (state.genScrollFollowPaused) return;
+    markProgrammaticThreadScroll();
     const cRect = container.getBoundingClientRect();
     const tRect = turn.getBoundingClientRect();
     const top = tRect.top - cRect.top + container.scrollTop - 16;
@@ -1464,6 +1543,7 @@ function appendMessageDom(m, scroll = true) {
   else if (scroll && isThreadScrollLocked()) {
     const container = document.getElementById("thread-container");
     if (container) {
+      markProgrammaticThreadScroll();
       container.scrollTop = maxThreadScrollTop();
       state.threadScrollLockTop = container.scrollTop;
     }
@@ -1562,10 +1642,10 @@ function renderGalleryFromJob(job, gridEl) {
       slot.className = "gallery-slot";
       slot.dataset.imageUrl = "";
       slot.innerHTML = "";
-      if (!jobTerminal && (jobLive === "running" || jobLive === "queued")) {
+      if (imageStillLanding(imgRec)) {
+        slot.textContent = `#${i} 生成中…`;
+      } else if (!jobTerminal && (jobLive === "running" || jobLive === "queued")) {
         slot.textContent = `#${i} 待重试`;
-      } else if (jobTerminal && !imgRec?.url) {
-        slot.textContent = `#${i} 同步中…`;
       } else {
         slot.textContent = `#${i} 失败`;
       }
@@ -1832,8 +1912,8 @@ function renderLightboxStrip(job, activeIndex) {
       const st = rec?.status || "";
       if (st === "failed") {
         const live = effectiveJobStatus(job);
-        if (live === "running" || live === "queued") btn.textContent = `#${i} 待重试`;
-        else if (job.status === "succeeded" && !rec?.url) btn.textContent = `#${i} 同步中`;
+        if (imageStillLanding(rec)) btn.textContent = `#${i} 生成中`;
+        else if (live === "running" || live === "queued") btn.textContent = `#${i} 待重试`;
         else btn.textContent = `#${i} 失败`;
       } else if (st === "running") btn.textContent = `#${i} 生成中`;
       else btn.textContent = `#${i} …`;
@@ -1896,46 +1976,108 @@ async function switchLightboxSlot(index) {
 }
 
 function resetLightboxRefineUploadUi() {
-  state.lightboxRefineUpload = null;
+  state.lightboxRefineUploads = [];
   const cb = document.getElementById("lightbox-refine-use-upload");
   if (cb) cb.checked = false;
   const wrap = document.getElementById("lightbox-refine-upload-wrap");
   wrap?.classList.add("hidden");
-  const preview = document.getElementById("lightbox-refine-upload-preview");
-  preview?.classList.add("hidden");
   const input = document.getElementById("lightbox-refine-upload-input");
   if (input) input.value = "";
-  const thumb = document.getElementById("lightbox-refine-upload-thumb");
-  if (thumb) thumb.removeAttribute("src");
+  renderLightboxRefineUploads();
   syncLightboxRefineHint();
+}
+
+function renderLightboxRefineUploads() {
+  const list = document.getElementById("lightbox-refine-upload-list");
+  const label = document.getElementById("lightbox-refine-upload-btn-label");
+  if (label) label.textContent = state.lightboxRefineUploads.length ? "继续添加" : "选择参考图片";
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.lightboxRefineUploads.length) {
+    list.classList.add("hidden");
+    return;
+  }
+  list.classList.remove("hidden");
+  state.lightboxRefineUploads.forEach((item, i) => {
+    const row = document.createElement("div");
+    row.className = "lightbox-refine-upload-preview";
+    const img = document.createElement("img");
+    img.alt = `图${i + 1}`;
+    if (item.url) img.src = item.url;
+    const meta = document.createElement("div");
+    meta.className = "lightbox-refine-upload-meta";
+    const nameEl = document.createElement("span");
+    nameEl.className = "lightbox-refine-upload-name";
+    nameEl.textContent = `图${i + 1}`;
+    const statusEl = document.createElement("span");
+    statusEl.className = "lightbox-refine-upload-status";
+    statusEl.textContent = item.name || "已就绪";
+    meta.append(nameEl, statusEl);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lightbox-refine-upload-clear";
+    btn.title = "移除这张参考图";
+    btn.textContent = "移除";
+    btn.addEventListener("click", () => {
+      state.lightboxRefineUploads.splice(i, 1);
+      renderLightboxRefineUploads();
+    });
+    row.append(img, meta, btn);
+    list.appendChild(row);
+  });
 }
 
 function syncLightboxRefineHint() {
   const el = document.getElementById("lightbox-refine-hint");
   const useUpload = document.getElementById("lightbox-refine-use-upload")?.checked;
   if (!el) return;
+  const promptEl = document.getElementById("lightbox-refine-prompt");
   if (useUpload) {
+    const n = state.lightboxRefineUploads.length;
+    const count = n ? `已选 ${n} 张，` : "";
     el.innerHTML =
-      "仅参考 <span class=\"lightbox-refine-tag\">新上传图片</span> + 下方修复说明生成；不使用商品原图与当前成图。确认后替换本槽位。";
+      `${count}按上传顺序称为 <span class="lightbox-refine-tag">图1</span>、<span class="lightbox-refine-tag">图2</span>… ` +
+      "只使用这些新图，不使用商品原图与当前成图。例如：图1是产品，模仿图2的设计和排版。";
+    if (promptEl && !promptEl.value.trim()) {
+      promptEl.placeholder = "例如：图1是产品图，模仿图2的设计和排版来生图…";
+    }
   } else {
     el.innerHTML =
       "参考 <span class=\"lightbox-refine-tag\">商品原图</span> " +
       "<span class=\"lightbox-refine-plus\">+</span> " +
       "<span class=\"lightbox-refine-tag\">当前成图</span> 双图生成，确认后才会替换套图槽位。";
+    if (promptEl && !promptEl.value.trim()) {
+      promptEl.placeholder = "例如：人物更自然、减少 AI 感；保持构图；产品包装与商品原图一致…";
+    }
   }
 }
 
-async function uploadLightboxRefineReference(file) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const data = await api("/api/uploads/", { method: "POST", body: fd });
-  state.lightboxRefineUpload = { id: data.id, name: data.original_name || file.name, url: data.url };
-  const preview = document.getElementById("lightbox-refine-upload-preview");
-  const thumb = document.getElementById("lightbox-refine-upload-thumb");
-  const nameEl = document.getElementById("lightbox-refine-upload-name");
-  if (thumb && data.url) thumb.src = data.url;
-  if (nameEl) nameEl.textContent = state.lightboxRefineUpload.name || "参考图";
-  preview?.classList.remove("hidden");
+async function uploadLightboxRefineReferences(files) {
+  const incoming = [...files];
+  if (!incoming.length) return;
+  const room = MAX_REF_IMAGES - state.lightboxRefineUploads.length;
+  if (room <= 0) {
+    setLightboxRefineStatus(`最多上传 ${MAX_REF_IMAGES} 张参考图`, true);
+    return;
+  }
+  const batch = incoming.slice(0, room);
+  if (batch.length < incoming.length) {
+    setLightboxRefineStatus(`已选 ${incoming.length} 张，仅添加前 ${batch.length} 张（上限 ${MAX_REF_IMAGES} 张）`);
+  } else {
+    setLightboxRefineStatus("正在上传参考图…");
+  }
+  for (const file of batch) {
+    const fd = new FormData();
+    fd.append("file", file);
+    const data = await api("/api/uploads/", { method: "POST", body: fd });
+    state.lightboxRefineUploads.push({
+      id: data.id,
+      name: data.original_name || file.name,
+      url: data.url,
+    });
+  }
+  renderLightboxRefineUploads();
+  syncLightboxRefineHint();
 }
 
 async function openImageLightbox(url, index, jobId) {
@@ -2151,12 +2293,14 @@ async function submitLightboxRefine() {
   const useUpload = Boolean(document.getElementById("lightbox-refine-use-upload")?.checked);
   const body = { prompt, image_model: imageModel, reference_mode: useUpload ? "upload_only" : "dual" };
   if (useUpload) {
-    if (!state.lightboxRefineUpload?.id) {
+    const ids = state.lightboxRefineUploads.map((item) => item.id).filter(Boolean);
+    if (!ids.length) {
       setLightboxRefineStatus("请先上传参考图片", true);
       if (submitBtn) submitBtn.disabled = false;
       return;
     }
-    body.reference_attachment_id = state.lightboxRefineUpload.id;
+    body.reference_attachment_ids = ids;
+    body.reference_attachment_id = ids[0];
   }
   try {
     const data = await api(
@@ -2244,6 +2388,12 @@ function generationJobImagesSignature(job) {
     .join("|");
 }
 
+function imageStillLanding(im) {
+  if (!im || im.url) return false;
+  const err = String(im.error_message || "");
+  return /未落盘|单张超时|待回收/.test(err);
+}
+
 function jobGalleryNeedsRefresh(job) {
   if (!job) return false;
   const total = Number(job.image_count) || 0;
@@ -2259,13 +2409,7 @@ function jobGalleryNeedsRefresh(job) {
     const st = String(im.status || "").toLowerCase();
     if (st === "running" || st === "pending") return true;
     if (st === "succeeded" && !im.url) return true;
-    if (
-      st === "failed" &&
-      ["succeeded", "failed", "cancelled"].includes(job.status) &&
-      !im.url
-    ) {
-      return true;
-    }
+    if (st === "failed" && imageStillLanding(im)) return true;
   }
   if (job.status === "running" && (job.completed_count || 0) < total) return true;
   return false;
@@ -2463,6 +2607,9 @@ async function cancelGenerationJob(jobId) {
     ChatCache.setJob(jobId, job);
     stopGenerationWatch(jobId);
     updateJobInChat(job);
+    if (jobGalleryNeedsRefresh(job)) {
+      startGallerySyncPoll(jobId, state.currentId);
+    }
     hideGenProgressIfIdle();
     enforceThreadScrollLock();
     return job;
@@ -3364,17 +3511,35 @@ function parkCurrentConversation() {
   hideGenProgressIfIdle();
 }
 
-async function loadConversationDetail(id, { preserveScroll = false, anchorGenerationJobId = null, forceFullRender = false } = {}) {
+async function loadConversationDetail(id, { preserveScroll = false, anchorGenerationJobId = null, forceFullRender = false, stickToBottom = false } = {}) {
   if (shouldBlockThreadFullReload() && state.currentId === id && !forceFullRender) {
     return ChatCache.getDetail(id)?.detail || null;
   }
-  const pinJob = isGenerationScrollPinned() ? state.generationScrollPinJobId : null;
-  let anchorId = anchorGenerationJobId || pinJob || state.focusGenJobId || null;
-  if (anchorId || isGenerationScrollPinned()) {
-    preserveScroll = false;
+  let anchorId = stickToBottom ? null : anchorGenerationJobId;
+  if (!stickToBottom) {
+    const pinJob = isGenerationScrollPinned() ? state.generationScrollPinJobId : null;
+    anchorId = anchorId || pinJob || state.focusGenJobId || null;
+    if (anchorId || isGenerationScrollPinned()) {
+      preserveScroll = false;
+    }
   }
-  const detail = await api(`/api/chat/conversations/${id}/?all_messages=1`);
-  detail.messages = sortMessagesForDisplay(detail.messages || []);
+  const detail = await api(`/api/chat/conversations/${id}/?limit=${MESSAGE_INITIAL_SIZE}`);
+  const incoming = sortMessagesForDisplay(detail.messages || []);
+  const cachedMessages = ChatCache.getDetail(id)?.detail?.messages || [];
+  const incomingOldest = incoming[0]?.id;
+  const olderKept =
+    incomingOldest == null
+      ? []
+      : cachedMessages.filter((m) => m.id != null && Number(m.id) < Number(incomingOldest));
+  detail.messages = sortMessagesForDisplay([...olderKept, ...incoming]);
+  const page = { ...(detail.message_pagination || {}) };
+  if (olderKept.length) {
+    const prev = state.messagePage[id] || {};
+    page.oldest_message_id = detail.messages[0]?.id ?? page.oldest_message_id;
+    page.newest_message_id = detail.messages[detail.messages.length - 1]?.id ?? page.newest_message_id;
+    page.has_more_older = prev.has_more_older != null ? prev.has_more_older : true;
+  }
+  detail.message_pagination = page;
   syncMessagePagination(id, detail.message_pagination);
   ChatCache.setDetail(id, detail);
   if (state.currentId !== id) return detail;
@@ -3388,6 +3553,7 @@ async function loadConversationDetail(id, { preserveScroll = false, anchorGenera
     preserveScroll,
     anchorGenerationJobId: anchorId,
     forceFullRender,
+    stickToBottom,
   });
   return detail;
 }
@@ -3398,6 +3564,11 @@ async function selectConversation(id) {
   }
 
   state.currentId = id;
+  state.genScrollFollowPaused = false;
+  state.generationScrollPinJobId = null;
+  state.generationScrollPinUntil = 0;
+  state.focusGenJobId = null;
+  clearThreadScrollLock();
   const convRow = state.conversations.find((c) => c.id === id);
   state.currentConvIsShared = conversationIsSharedCopy(convRow);
   updateShareChatButtonState();
@@ -3419,12 +3590,12 @@ async function selectConversation(id) {
       cachedRow.detail.is_shared || cachedRow.detail.shared_by_label
     );
     updateShareChatButtonState();
-    renderMessages(cachedRow.detail.messages || []);
+    renderMessages(cachedRow.detail.messages || [], { stickToBottom: true });
     await resumeWatchersForThread(messagesEl);
     return;
   }
 
-  await loadConversationDetail(id);
+  await loadConversationDetail(id, { stickToBottom: true });
 }
 
 async function newConversation() {
@@ -3703,8 +3874,11 @@ async function startGeneration(prompt) {
   const castSkin =
     document.getElementById("cast-skin-preset")?.value || state.castSkinPreset || "caucasian";
   state.castSkinPreset = castSkin;
+  const backgroundMode =
+    document.getElementById("background-mode")?.value || "random";
   try {
     localStorage.setItem("ia_cast_skin_preset", castSkin);
+    localStorage.setItem("ia_background_mode", backgroundMode);
   } catch (_) {}
 
   syncAspectRatioFromUi();
@@ -3717,6 +3891,7 @@ async function startGeneration(prompt) {
     plan_template: planTemplate,
     marketplace_id: document.getElementById("marketplace-id")?.value || state.marketplaceId,
     cast_skin_preset: castSkin,
+    background_mode: backgroundMode,
     aspect_ratio: state.aspectRatio || "1:1",
   };
   const attIds = state.attachments.map((a) => a.id);
@@ -3783,6 +3958,7 @@ async function sendMessage() {
   if (!state.currentId) await newConversation();
 
   state.currentConvHasMessages = true;
+  state.genScrollFollowPaused = false;
   updateShareChatButtonState();
 
   input.value = "";
@@ -3824,6 +4000,7 @@ async function sendMessage() {
         })),
       };
       appendMessageDom({ role: "user", content: text, metadata: genMeta }, true);
+      collapseToolsPanel();
       await startGeneration(text);
       clearAttachment();
     } else {
@@ -3992,6 +4169,10 @@ function toggleConvSearchPanel() {
   }
 }
 
+function collapseToolsPanel() {
+  document.getElementById("tools-panel")?.classList.add("hidden");
+}
+
 function toggleToolsPanel() {
   document.getElementById("tools-panel").classList.toggle("hidden");
 }
@@ -4006,14 +4187,20 @@ const threadScrollEl = document.getElementById("thread-container");
 threadScrollEl?.addEventListener(
   "scroll",
   () => {
+    if (!state._threadScrollProgrammatic) pauseGenerationScrollFollow();
     clearTimeout(state._scrollLoadOlderTimer);
     state._scrollLoadOlderTimer = setTimeout(onThreadScrollNearTop, 120);
   },
   { passive: true }
 );
-for (const ev of ["wheel", "touchstart", "pointerdown"]) {
+for (const ev of ["wheel", "touchmove"]) {
   threadScrollEl?.addEventListener(ev, releaseThreadScrollLockFromUser, { passive: true });
 }
+threadScrollEl?.addEventListener("keydown", (e) => {
+  if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) {
+    pauseGenerationScrollFollow();
+  }
+});
 
 document.getElementById("btn-send").onclick = () => sendMessage().catch(alert);
 document.getElementById("prompt-input").addEventListener("input", () => {
@@ -4112,6 +4299,31 @@ function closeDocsModal(kind) {
   const id = kind === "usage" ? "docs-usage-modal" : "docs-templates-modal";
   document.getElementById(id)?.classList.add("hidden");
 }
+
+function applyColorTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  if (next === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+  document.querySelectorAll(".theme-switch-btn").forEach((btn) => {
+    const on = btn.dataset.themeValue === next;
+    btn.classList.toggle("is-active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  try {
+    localStorage.setItem("ia_color_theme", next);
+  } catch (_) {}
+}
+
+(function initColorTheme() {
+  let saved = "dark";
+  try {
+    saved = localStorage.getItem("ia_color_theme") || "dark";
+  } catch (_) {}
+  applyColorTheme(saved);
+  document.querySelectorAll(".theme-switch-btn").forEach((btn) => {
+    btn.addEventListener("click", () => applyColorTheme(btn.dataset.themeValue));
+  });
+})();
 
 document.getElementById("btn-docs-literature")?.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -4248,31 +4460,26 @@ document.getElementById("lightbox-refine-use-upload")?.addEventListener("change"
   if (on) wrap?.classList.remove("hidden");
   else {
     wrap?.classList.add("hidden");
-    const preview = document.getElementById("lightbox-refine-upload-preview");
-    preview?.classList.add("hidden");
-    state.lightboxRefineUpload = null;
+    state.lightboxRefineUploads = [];
     const input = document.getElementById("lightbox-refine-upload-input");
     if (input) input.value = "";
+    renderLightboxRefineUploads();
   }
   syncLightboxRefineHint();
 });
 document.getElementById("lightbox-refine-upload-input")?.addEventListener("change", async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  setLightboxRefineStatus("正在上传参考图…");
+  const files = e.target.files;
+  if (!files?.length) return;
   try {
-    await uploadLightboxRefineReference(file);
-    setLightboxRefineStatus("");
+    await uploadLightboxRefineReferences(files);
+    if (!document.getElementById("lightbox-refine-status")?.classList.contains("error")) {
+      setLightboxRefineStatus("");
+    }
   } catch (err) {
     setLightboxRefineStatus(err.message || "上传失败", true);
-    state.lightboxRefineUpload = null;
+  } finally {
+    e.target.value = "";
   }
-});
-document.getElementById("lightbox-refine-upload-clear")?.addEventListener("click", () => {
-  state.lightboxRefineUpload = null;
-  document.getElementById("lightbox-refine-upload-preview")?.classList.add("hidden");
-  const input = document.getElementById("lightbox-refine-upload-input");
-  if (input) input.value = "";
 });
 document.getElementById("lightbox-refine-submit")?.addEventListener("click", () => {
   submitLightboxRefine().catch((e) => setLightboxRefineStatus(e.message, true));
@@ -4307,6 +4514,37 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
     alert(err.message);
   } finally {
     e.target.value = "";
+  }
+});
+
+function clipboardImageFiles(event) {
+  const dt = event.clipboardData;
+  if (!dt) return [];
+  const files = [];
+  if (dt.files?.length) {
+    for (const file of dt.files) {
+      if (file?.type?.startsWith("image/")) files.push(file);
+    }
+  }
+  if (!files.length && dt.items) {
+    for (const item of dt.items) {
+      if (item.kind === "file" && item.type?.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+  }
+  return files;
+}
+
+document.getElementById("composer-box")?.addEventListener("paste", async (e) => {
+  const files = clipboardImageFiles(e);
+  if (!files.length) return;
+  e.preventDefault();
+  try {
+    await addAttachmentFiles(files);
+  } catch (err) {
+    alert(err.message || "粘贴图片失败");
   }
 });
 
@@ -4353,6 +4591,11 @@ document.querySelector(".gen-cancel-btn")?.addEventListener("click", (e) => {
       state.castSkinPreset = savedSkin;
       const skinSel = document.getElementById("cast-skin-preset");
       if (skinSel) skinSel.value = savedSkin;
+    }
+    const savedBg = localStorage.getItem("ia_background_mode");
+    if (savedBg && ["random", "solid_virtual", "real_environment"].includes(savedBg)) {
+      const bgSel = document.getElementById("background-mode");
+      if (bgSel) bgSel.value = savedBg;
     }
   } catch (_) {}
   updateModelUI();

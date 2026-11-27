@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from django.conf import settings
 from django.utils import timezone
 
 from generation.models import GeneratedImage, GenerationJob
@@ -13,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 def _stall_seconds(job: GenerationJob) -> float:
-    per = float(getattr(settings, "GRSAI_PER_IMAGE_MAX_SECONDS", 180))
-    n = max(1, int(job.image_count or 1))
-    return max(240.0, per * n * 0.6 + 120.0)
+    """只在 worker 真正消失很久后才收束。不能用整单已用时间去判末镜失败。"""
+    del job
+    return 3600.0
 
 
 def _promote_running_with_file(job: GenerationJob) -> int:
@@ -43,28 +42,6 @@ def _promote_failed_with_file(job: GenerationJob) -> int:
     if fixed:
         logger.info("job=%s promoted %s FAILED->SUCCEEDED (file present)", job.id, fixed)
     return fixed
-
-
-def _fail_lone_trailing_running(job: GenerationJob) -> bool:
-    """末镜卡在 running、其余已成功且上游已无请求时快速失败该镜。"""
-    running = list(job.images.filter(status=GeneratedImage.Status.RUNNING))
-    if len(running) != 1:
-        return False
-    img = running[0]
-    if img.file:
-        return False
-    succeeded = job.images.filter(status=GeneratedImage.Status.SUCCEEDED).count()
-    if succeeded < max(0, int(job.image_count or 0) - 1):
-        return False
-    # 末镜进行中时不可用整单 started_at 判定（易导致第 9 张误标失败）
-    age = (timezone.now() - (job.started_at or job.created_at)).total_seconds()
-    if age < _stall_seconds(job):
-        return False
-    img.status = GeneratedImage.Status.FAILED
-    img.error_message = "末镜未落盘（中转站已完成，可局部重试）"
-    img.save(update_fields=["status", "error_message"])
-    logger.warning("job=%s lone trailing RUNNING index=%s marked FAILED", job.id, img.index)
-    return True
 
 
 def _fail_stale_running(job: GenerationJob, *, reason: str) -> int:
@@ -140,20 +117,24 @@ def reconcile_generation_job(job: GenerationJob) -> GenerationJob:
         GenerationJob.Status.CANCELLED,
     )
     if terminal:
+        grace_s = 600.0
+        finished = job.finished_at
+        age = (timezone.now() - finished).total_seconds() if finished else 0.0
         for img in job.images.filter(status=GeneratedImage.Status.RUNNING):
             if img.file:
                 img.status = GeneratedImage.Status.SUCCEEDED
-            else:
+                img.error_message = ""
+                img.save(update_fields=["status", "error_message"])
+            elif age >= grace_s:
                 img.status = GeneratedImage.Status.FAILED
                 img.error_message = img.error_message or "任务已结束但该镜未落盘"
-            img.save(update_fields=["status", "error_message"])
+                img.save(update_fields=["status", "error_message"])
         new_count = job.images.filter(status=GeneratedImage.Status.SUCCEEDED).count()
         if new_count != job.completed_count:
             job.completed_count = new_count
             job.save(update_fields=["completed_count"])
         return job
 
-    _fail_lone_trailing_running(job)
     _fail_stale_running(
         job,
         reason="单镜超时或 worker 中断（可对该镜做局部重试）",

@@ -10,9 +10,11 @@ DEFAULT_NO_CHINESE_NEGATIVE = (
 
 ON_IMAGE_TEXT_MANDATE_ES_MX = (
     "ON-IMAGE TEXT POLICY — CRITICAL: Do NOT render Chinese (中文/汉字) anywhere. "
-    "Marketing typography must be Spanish (México), SHORT and high-contrast — each frame needs "
-    "a focal message (not pure visual-only art). Hero: up to 2 headline lines + 3 icon bullets; "
-    "other frames: 1–3 short callouts (2–6 words) OR compact spec/step tags. "
+    "Index 2 (white catalog) and Index 4 (before/after visual): ZERO added marketing text. "
+    "All other TK frames (1,3,5,6,7,8,9): a LARGE Spanish (México) text panel for ONE benefit — "
+    "bold headline, a two-line introduction, and three proof lines about that same benefit. "
+    "The panel covers about one third of the image. The photo fills the rest. Do not leave an empty card. "
+    "Do not repeat another frame's wording and do not print Step 1 / Step 2. "
     "Reproduce packaging label text EXACTLY from reference only. No English marketing unless user asked."
 )
 

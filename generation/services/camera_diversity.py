@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from generation.services.listing_bundle import is_listing_ecommerce_plan
+
 # index 1–9 默认机位（批次 0）
 CAMERA_SPEC_BY_INDEX: dict[int, dict[str, str]] = {
     1: {
@@ -216,7 +218,7 @@ CAMERA_RING_BY_INDEX: dict[int, list[dict[str, str]]] = {
         {
             "code": "eye_level_profile_contrast",
             "short": "eye-level lateral contrast",
-            "orientation": "Eye-level lateral view; transformation via color grade left vs right; product centered.",
+            "orientation": "Eye-level lateral view; before/after differs by brightness only, same hue; product centered.",
             "mandate": "CAMERA MANDATE — Lateral eye-level contrast layout.",
         },
         {
@@ -294,22 +296,22 @@ CAMERA_RING_BY_INDEX: dict[int, list[dict[str, str]]] = {
         {
             "code": "table_scatter_oblique",
             "short": "table scatter oblique",
-            "orientation": "Oblique scatter on wood table; shallow depth; warm premium.",
+            "orientation": "Oblique scatter on the set's surface; shallow depth; same color grade as the rest of the set.",
             "mandate": "CAMERA MANDATE — Oblique value layout.",
         },
     ],
     9: [
         {},
         {
-            "code": "golden_hour_park",
-            "short": "golden hour outdoor",
-            "orientation": "Outdoor golden hour; product on bench/grass; wide 35mm; aspirational.",
-            "mandate": "CAMERA MANDATE — Outdoor payoff wide.",
+            "code": "outdoor_payoff",
+            "short": "outdoor payoff",
+            "orientation": "Outdoor bench or path in the SAME color grade as the set; wide 35mm; no golden hour, no sunset pink.",
+            "mandate": "CAMERA MANDATE — Outdoor payoff wide, same grade as the set.",
         },
         {
             "code": "night_city_bokeh",
             "short": "night city bokeh",
-            "orientation": "Night city lights bokeh; product sharp foreground; cool-warm contrast.",
+            "orientation": "Night street bokeh only if recolored into the set grade; product sharp; no cool-warm split.",
             "mandate": "CAMERA MANDATE — Urban night payoff.",
         },
     ],
@@ -323,11 +325,96 @@ ANGLE_NEGATIVE = (
     "all nine images front-facing packshot, repeating the same three-quarter hero angle"
 )
 
-LISTING_ANGLE_DIVERSITY_EN = (
-    "LISTING CAMERA DIVERSITY — All 9 frames MUST use visibly different camera height, distance, "
-    "and product rotation/facing. Forbidden: nine similar front-facing packshots, copying the reference "
-    "photo pose, or only tiny 5–15° rotations between frames. Match SKU identity but rotate orientation per frame mandate."
+UPRIGHT_POSE_NEGATIVE = (
+    "toothpaste or tube standing vertical on counter, upright default packshot on vanity, "
+    "reference-photo upright placement on creative frames, identical vertical standing pose "
+    "on frames 3-9, eye-level centered vertical tube repeated, only frame 2 may be upright catalog"
 )
+
+# 产品与机位分离：明确「身体摆放」——竖立/斜靠/躺放/俯视/仰视
+PRODUCT_POSE_LOCK_BY_INDEX: dict[int, str] = {
+    1: (
+        "PRODUCT PHYSICAL POSE — Tube tilted ~35° on foreground plinth/surface; "
+        "dynamic diagonal long axis; NOT compliance upright catalog."
+    ),
+    2: (
+        "PRODUCT PHYSICAL POSE — Upright vertical front-facing catalog on white ONLY (this index alone)."
+    ),
+    3: (
+        "PRODUCT PHYSICAL POSE — Tube RECLINING 25–45° on towel or sink edge; "
+        "long axis diagonal in frame; show cap or heel; FORBIDDEN standing vertical center."
+    ),
+    4: (
+        "PRODUCT PHYSICAL POSE — Tube lying on side OR cap-end toward lens at ~40° tilt; "
+        "elevated camera; asymmetric layout; NOT upright counter display."
+    ),
+    5: (
+        "PRODUCT PHYSICAL POSE — Horizontal lay on surface showing SIDE/edge label "
+        "OR strict 90° profile silhouette; NOT front-facing upright standing tube."
+    ),
+    6: (
+        "PRODUCT PHYSICAL POSE — Reclining ~15–30° against vanity tray, shelf lip, or folded towel; "
+        "wide lifestyle room; FORBIDDEN centered vertical tube on counter."
+    ),
+    7: (
+        "PRODUCT PHYSICAL POSE — Handheld at tilt mid-use OR reclined on counter during demo; "
+        "table-height camera; NOT static upright product-only display."
+    ),
+    8: (
+        "PRODUCT PHYSICAL POSE — MANDATORY flat lay: tube LYING HORIZONTAL on textured surface "
+        "(bird's-eye 90°); cap pointing left or right; ONLY overhead angle; NEVER standing vertical."
+    ),
+    9: (
+        "PRODUCT PHYSICAL POSE — Worm's-eye LOW camera: tube leaning toward lens 45–55° "
+        "with foreshortening; product in lower third; NOT eye-level vertical standing pose."
+    ),
+}
+
+LISTING_ANGLE_DIVERSITY_EN = (
+    "LISTING CAMERA DIVERSITY — All 9 frames MUST use visibly different camera height (top-down, eye-level, low/worm's-eye), "
+    "distance, AND product physical pose (tilted, reclining, horizontal lay, profile, upright catalog on index 2 only). "
+    "Forbidden: nine upright tubes on counters, copying reference upright pose on frames 3–9, "
+    "or only tiny 5–15° camera tweaks. Reference locks label/colors only — obey PRODUCT PHYSICAL POSE for this index."
+)
+
+# 摆放 archetype：与机位互斥，减少九宫格「全是居中 hero」
+PLACEMENT_LOCK_BY_INDEX: dict[int, str] = {
+    1: (
+        "PLACEMENT — Product on foreground plinth or edge-of-frame hero; reserve about one third "
+        "for a filled Spanish text panel, not blank margin; NOT centered catalog pose."
+    ),
+    2: (
+        "PLACEMENT — Dead-center on seamless white; no props; compliance catalog isolation only."
+    ),
+    3: (
+        "PLACEMENT — Reclined tube in contextual mid-ground (~35% frame); diagonal long axis; "
+        "NOT upright vertical on counter; NOT hero plinth duplicate of frame 1."
+    ),
+    4: (
+        "PLACEMENT — Asymmetric before/after split or diagonal flow; product on left or right third; "
+        "NOT centered packshot."
+    ),
+    5: (
+        "PLACEMENT — Profile on vertical centerline OR flat macro surface; studio strip/band layout; "
+        "distinct from table-hero framing."
+    ),
+    6: (
+        "PLACEMENT — Reclined SKU on vanity shelf or counter edge; mid-distance lifestyle; "
+        "NOT centered upright vertical tube; NOT floating center cutout."
+    ),
+    7: (
+        "PLACEMENT — In-use staging: hands/model occupy rule-of-thirds; product at interaction point; "
+        "NOT static center product only."
+    ),
+    8: (
+        "PLACEMENT — Strict 90° flat lay grid on textured surface; kit items orbit product; "
+        "ONLY frame allowed overhead layout."
+    ),
+    9: (
+        "PLACEMENT — Product in lower third; wide aspirational background dominant; "
+        "small hero in environment — NOT large centered packshot."
+    ),
+}
 
 
 def _merge_spec(base: dict[str, str], override: dict[str, str]) -> dict[str, str]:
@@ -364,6 +451,7 @@ def apply_camera_diversity(plan: dict, *, merge: bool = False) -> dict:
     shots = plan.get("shots") or []
     batch_index = int(plan.get("visual_batch_index") or 0)
     roster: dict[int, str] = {}
+    force_listing_angles = is_listing_ecommerce_plan(plan)
 
     plan["camera_batch_preset_id"] = f"ring_batch_{batch_index % 6}"
 
@@ -377,7 +465,7 @@ def apply_camera_diversity(plan: dict, *, merge: bool = False) -> dict:
             continue
 
         creative_has_orient = idx in _CREATIVE_INDICES and (shot.get("orientation_lock") or "").strip()
-        if merge:
+        if merge or force_listing_angles:
             shot["orientation_lock"] = spec["orientation"]
             shot["camera_angle_code"] = spec["code"]
         elif not creative_has_orient:
@@ -393,16 +481,58 @@ def apply_camera_diversity(plan: dict, *, merge: bool = False) -> dict:
             else:
                 _append_mandate(shot, spec["mandate"])
 
+        placement = PLACEMENT_LOCK_BY_INDEX.get(idx)
+        if placement:
+            shot["placement_lock"] = placement
+
+        pose_lock = PRODUCT_POSE_LOCK_BY_INDEX.get(idx)
+        if pose_lock:
+            shot["product_pose_lock_en"] = pose_lock
+            if idx != 2:
+                pal = (shot.get("product_action_lock_en") or "").strip()
+                override = (
+                    "STAGING OVERRIDE — PRODUCT PHYSICAL POSE for this index wins over any "
+                    "'upright catalog' or 'front display' wording in action locks."
+                )
+                shot["product_action_lock_en"] = f"{pal} {override}".strip() if pal else override
+
         extra = (shot.get("negative_extra") or "").strip()
         if ANGLE_NEGATIVE not in extra:
-            shot["negative_extra"] = f"{extra}, {ANGLE_NEGATIVE}".strip(", ")
+            extra = f"{extra}, {ANGLE_NEGATIVE}".strip(", ")
+        if idx != 2 and "upright default packshot" not in extra.lower():
+            extra = f"{extra}, {UPRIGHT_POSE_NEGATIVE}".strip(", ")
+        shot["negative_extra"] = extra
 
         roster[idx] = spec["short"]
 
+    pose_roster: dict[int, str] = {}
+    for shot in shots:
+        try:
+            pi = int(shot.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        pl = (shot.get("product_pose_lock_en") or "").strip()
+        if pl:
+            pose_roster[pi] = pl[:100]
+
     plan["camera_roster"] = roster
+    plan["listing_product_pose_roster"] = pose_roster
+    plan["listing_product_pose_diversity_en"] = (
+        "PRODUCT POSE DIVERSITY — Physical staging must differ every frame: "
+        + "; ".join(f"#{i}={pose_roster[i][:60]}" for i in sorted(pose_roster.keys()))
+        + ". Index 2 alone may use upright catalog vertical. "
+        "Do NOT copy reference photo upright placement on other indices."
+    )
     plan["listing_angle_diversity_lock_en"] = (
         f"{LISTING_ANGLE_DIVERSITY_EN} This listing batch uses camera preset '{plan['camera_batch_preset_id']}' — "
-        "each index has a distinct mandated facing; do not revert to reference-photo angle."
+        "each index has a distinct mandated facing and product rotation — "
+        "FORBIDDEN to reuse the same centered 3/4 hero pose on multiple frames; "
+        "do not revert to reference-photo angle."
     )
+    if force_listing_angles:
+        plan["listing_camera_mandate_strict_en"] = (
+            "STRICT CAMERA ROSTER — Indices 1–9 each have a different camera_height, distance, and product facing. "
+            "Obey this frame's orientation_lock exactly; reference image is SKU-only, not pose."
+        )
     plan["shots"] = shots
     return plan

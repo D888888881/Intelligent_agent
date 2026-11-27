@@ -22,9 +22,15 @@ def run_layer2_category_strategy(
     *,
     marketplace_id: str | None,
 ) -> tuple[dict, dict]:
+    from generation.services.product_usage_semantics import normalize_product_usage_analysis
+
+    product_analysis = normalize_product_usage_analysis(dict(product_analysis or {}), user_prompt)
     mid = normalize_marketplace_id(marketplace_id)
     prof = MARKETPLACE_PROFILES[mid]
     category_bucket = _normalize_category_bucket(str(product_analysis.get("category") or ""))
+    zone = (product_analysis.get("application_zone") or "").strip()
+    if zone in ("hair", "oral", "skin_face", "body_hand", "body_bath") and not category_bucket:
+        category_bucket = "beauty_skincare"
     if not category_bucket and product_analysis:
         probe = {"product_analysis": product_analysis}
         if is_beauty_skincare_plan(probe):

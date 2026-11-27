@@ -20,11 +20,12 @@ FRAME_3_VARIANTS: list[dict] = [
         "archetype": "benefit_problem_solver",
         "scene_family": "visual_benefit_contrast",
         "mandate_en": (
-            "FRAME 3 — Benefit contrast: ONE photograph showing the problem solved — comfort, storage, "
-            "space-saving, smooth glide, durability, slimming effect, convenience, etc. (pick 1–2 that fit SKU). "
+            "FRAME 3 — Benefit contrast: ONE photograph showing the problem solved for THIS SKU's real use case "
+            "(pick 1–2 benefits from product analysis only — not generic kitchen storage gadgets). "
             "Use before/after metaphor OR side-by-side props WITHOUT text labels (no 使用前/使用后, no antes/después). "
-            "Product clearly visible; empathy through scene, not grim clutter; differs from frame 4 pain-compare flex "
-            "and frame 6 trust lifestyle scene."
+            "Hero SKU from reference MUST occupy ≥35% of frame — NEVER make a kitchen gadget or cleaner the hero. "
+            "Props must match product use (bathroom/vanity for toothpaste, not vegetable chopper demos). "
+            "Differs from frame 4 pain-compare and frame 6 trust lifestyle scene."
         ),
     },
     {
@@ -143,7 +144,19 @@ def _build_benefit_context(analysis: dict, user_prompt: str) -> str:
         if u not in picked:
             picked.append(u[:80])
     if not picked:
-        picked = ["comfort", "convenience", "quality"]
+        cat = (
+            (analysis.get("category") or "")
+            + " "
+            + (analysis.get("primary_function") or "")
+            + " "
+            + user_prompt[:120]
+        ).lower()
+        if any(x in cat for x in ("tooth", "oral", "dental", "paste", "牙膏")):
+            picked = ["fresh breath", "cavity care", "bright smile", "daily oral care"]
+        elif any(x in cat for x in ("skin", "cream", "serum", "lotion", "洁面", "护肤")):
+            picked = ["hydration", "gentle care", "radiant skin"]
+        else:
+            picked = ["comfort", "convenience", "quality"]
     return (
         "Visualize benefits solved: "
         + "; ".join(picked[:5])
@@ -245,7 +258,9 @@ def apply_frame3_flex_variant(
     user_prompt = (plan.get("user_prompt") or "")[:800]
     if vid == "benefit_solve_visual":
         ctx = _build_benefit_context(analysis, user_prompt)
-        shot3["frame3_content_lock"] = f"FRAME 3 CONTENT — {ctx}"
+        shot3["frame3_content_lock"] = (
+            f"FRAME 3 CONTENT — ONE benefit only from: {ctx}. Do not illustrate multiple pains in one frame."
+        )
         shot3["story_beat_lock"] = (
             "BENEFIT SOLVE BEAT — Show comfort/storage/space/smooth/durable/slimming/convenience "
             "visually; no grim pain clutter; no comparison typography."
@@ -264,16 +279,21 @@ def apply_frame3_flex_variant(
         shot3["ingredient_composition_only"] = True
     else:
         ctx = _build_detail_context(analysis)
-        shot3["frame3_content_lock"] = f"FRAME 3 CONTENT — {ctx}"
-        shot3["story_beat_lock"] = (
-            "DETAIL BEAT — Macro or near-macro on material, texture, craft, interface, label, or packaging; "
-            "SKU accurate; generous clarity at mobile size."
+        shot3["frame3_content_lock"] = (
+            f"FRAME 3 CONTENT — Pick ONE detail zone only: {ctx}. "
+            "Show it large, with this frame's text panel beside it. No before/after."
         )
+        shot3["story_beat_lock"] = (
+            "DETAIL BEAT — Near-macro on ONE zone (texture, cap, label edge, seam), "
+            "SKU accurate, plus a large text panel. Fill the frame; no blank margin."
+        )
+        variant = dict(variant)
+        variant["density"] = "rich"
 
     density = variant.get("density", "balanced")
     if density == "minimal":
         shot3["composition_density_lock"] = (
-            "COMPOSITION DENSITY — Minimal: 1–2 elements, generous negative space."
+            "COMPOSITION DENSITY — Fill the frame: the detail is large, and a text panel explains the benefit."
         )
     elif density == "rich":
         shot3["composition_density_lock"] = (

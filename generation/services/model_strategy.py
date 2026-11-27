@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from generation.services.camera_diversity import apply_camera_diversity
 from generation.services.image_text_policy import merge_image_text_negative
+from generation.services.listing_visual_cohesion import apply_listing_visual_cohesion
+from generation.services.product_sku_guard import apply_product_sku_guard
+from generation.services.shot_reference_policy import apply_tiered_shot_reference_policy
 
 BANANA_STRICT_NEGATIVE = (
     "redesigned packaging, different label artwork, wrong bottle color, wrong cap color, "
@@ -13,6 +16,11 @@ BANANA_STRICT_NEGATIVE = (
 GPT_IMAGE_NEGATIVE_EXTRA = (
     "tiny product, product lost in background, same angle as other photos, duplicate composition, "
     "identical camera position, flat layout, product smaller than 40 percent of frame"
+)
+
+P0_POSE_PLACEMENT_NEGATIVE = (
+    "same angle as reference photo, duplicate 3/4 hero, identical product placement, "
+    "mirrored pose from other listing frames, clone reference camera crop, repeating centered packshot"
 )
 
 # 历史：曾仅白底带参考；GPT Image 在无图时会以 violation 拒答「请上传参考图」，有参考时应全镜头带图。
@@ -34,6 +42,7 @@ def tune_plan_for_image_model(
     has_reference: bool = False,
 ) -> dict:
     """根据模型改写 reference 策略与镜头构图约束。"""
+    plan = apply_product_sku_guard(plan)
     family = model_family(image_model)
     plan["image_model_family"] = family
     plan["reference_attachment_present"] = bool(has_reference or plan.get("reference_attachment_present"))
@@ -53,48 +62,61 @@ def tune_plan_for_image_model(
     shots = plan.get("shots") or []
 
     if family == "banana":
-        plan["reference_policy"] = "banana_strict_all"
         plan["default_reference_mode"] = "identity"
         neg = (plan.get("negative_prompt") or "").strip()
         plan["negative_prompt"] = f"{neg}, {BANANA_STRICT_NEGATIVE}".strip(", ")
+        plan = apply_camera_diversity(plan, merge=False)
+        shots = plan.get("shots") or []
+        plan = apply_tiered_shot_reference_policy(
+            plan, family=family, has_reference=bool(has_reference or plan.get("reference_attachment_present"))
+        )
+        shots = plan.get("shots") or []
+        if not plan.get("reference_policy"):
+            plan["reference_policy"] = "banana_strict_all"
         for shot in shots:
-            shot["reference_mode"] = "identity"
             shot.setdefault(
                 "negative_extra",
                 "wrong packaging print, bottle color mismatch, label redesign",
             )
-        plan = apply_camera_diversity(plan, merge=False)
-        shots = plan.get("shots") or []
+            extra = (shot.get("negative_extra") or "").strip()
+            if P0_POSE_PLACEMENT_NEGATIVE not in extra:
+                shot["negative_extra"] = f"{extra}, {P0_POSE_PLACEMENT_NEGATIVE}".strip(", ")
     elif family == "gpt_image":
         if has_reference:
-            plan["reference_policy"] = "gpt_all_with_ref"
             plan["default_reference_mode"] = "identity"
         else:
-            plan["reference_policy"] = "gpt_text_only"
             plan["default_reference_mode"] = "none"
         neg = (plan.get("negative_prompt") or "").strip()
         plan["negative_prompt"] = f"{neg}, {GPT_IMAGE_NEGATIVE_EXTRA}".strip(", ")
-        for shot in shots:
-            role = shot.get("role") or ""
-            if has_reference:
-                shot["reference_mode"] = "identity"
-            elif role in GPT_REF_ROLES:
-                shot["reference_mode"] = "identity"
-            else:
-                shot["reference_mode"] = "none"
-            shot.setdefault(
-                "prompt_en",
-                (shot.get("prompt_en") or "")
-                + " Product must be the clear visual hero with professional e-commerce layout; "
-                "rotate the product to the mandated orientation — never clone the reference photo pose.",
-            )
         plan = apply_camera_diversity(plan, merge=False)
         shots = plan.get("shots") or []
+        plan = apply_tiered_shot_reference_policy(
+            plan, family=family, has_reference=bool(has_reference or plan.get("reference_attachment_present"))
+        )
+        shots = plan.get("shots") or []
+        if not has_reference:
+            plan["reference_policy"] = "gpt_text_only"
+        for shot in shots:
+            extra = (shot.get("prompt_en") or "")
+            if "mandated orientation" not in extra:
+                shot["prompt_en"] = (
+                    extra
+                    + " Product must be the clear visual hero with professional e-commerce layout; "
+                    "rotate the product to the mandated orientation — never clone the reference photo pose."
+                )
+            shot.setdefault(
+                "negative_extra",
+                "",
+            )
+            negx = (shot.get("negative_extra") or "").strip()
+            if P0_POSE_PLACEMENT_NEGATIVE not in negx:
+                shot["negative_extra"] = f"{negx}, {P0_POSE_PLACEMENT_NEGATIVE}".strip(", ")
     else:
         plan.setdefault("reference_policy", "default")
 
     plan["shots"] = shots
     plan["negative_prompt"] = merge_image_text_negative(plan.get("negative_prompt"))
+    plan = apply_listing_visual_cohesion(plan)
     return plan
 
 
@@ -161,14 +183,14 @@ def reference_prefix_for_model(
     if purpose == "slot_refine_upload":
         if family == "gpt_image":
             return (
-                "SINGLE-REFERENCE GENERATION — Exactly one image is attached in images[]. "
-                "Create a new listing frame from scratch following the user prompt; "
-                "use the attachment as the sole visual reference (composition, subject, style). "
+                "UPLOADED REFERENCES — images[] follow upload order (image 1 = 图1, image 2 = 图2, …). "
+                "Create one new listing frame from the user prompt. "
+                "If the prompt assigns roles (product vs layout to imitate), keep that mapping. "
                 "Generate the image directly; do not ask for more uploads."
             )
         return (
-            "Single reference image attached — generate one new frame per user prompt; "
-            "treat attachment as the only visual guide."
+            "Uploaded references are attached in order (图1, 图2, …). "
+            "Generate one new frame and follow the prompt's role for each image."
         )
     if purpose == "slot_refine":
         if family == "banana":
@@ -207,8 +229,10 @@ def reference_prefix_for_model(
         return (
             "IMAGE GENERATION TASK — Reference image is attached (images field). Generate ONE 1024×1024 image now. "
             "Do not respond with text asking the user to upload photos — output the image directly. "
-            "Match packaging, logo, label wording, and colors from reference — but NEVER copy reference angle or orientation. "
-            "Rotate product to the MANDATORY PRODUCT ORIENTATION below; each listing frame uses a different facing direction. "
+            "Match packaging, logo, label wording, and colors from reference — but NEVER copy reference angle, "
+            "upright standing placement, or orientation. "
+            "Obey PRODUCT PHYSICAL POSE for this frame (tilt, recline, horizontal lay, top-down, or low-angle); "
+            "each listing frame uses a different camera height AND different product staging. "
             "When humans or hands appear, follow HUMAN CAST — distinct photorealistic models per frame; "
             "use reference for SKU only, not for copying faces or poses from the reference photo. "
             "vary skin tone (light/fair, medium olive, brown); do not default to one repeated East-Asian-looking face. "

@@ -4,11 +4,22 @@ from django.conf import settings
 
 
 CHAT_MODELS = [
+    {"id": "gpt-6.2-sol", "label": "GPT 6.2 Sol"},
+    {"id": "gpt-6.2-astra", "label": "GPT 6.2 Astra"},
+    {"id": "gpt-6.1-sol", "label": "GPT 6.1 Sol"},
     {"id": "gpt-6.1-terra", "label": "GPT 6.1 Terra"},
+    {"id": "gpt-6-luna", "label": "GPT 6 Luna"},
+    {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
+    {"id": "gpt-5.6-terra", "label": "GPT 5.6 Terra"},
+    {"id": "gpt-5.6", "label": "GPT 5.6"},
     {"id": "gpt-4.1", "label": "GPT-4.1"},
     {"id": "gpt-4o", "label": "GPT-4o"},
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini"},
-    {"id": "deepseek-chat", "label": "DeepSeek Chat"},
+    {"id": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash"},
+    {"id": "deepseek-v4-flash-0731", "label": "DeepSeek V4 Flash 0731"},
+    {"id": "deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro 0813"},
+    {"id": "deepseek-v4-flash-vision-exp", "label": "DeepSeek V4 Flash Vision Exp"},
+    {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
 ]
 
 VISION_MODELS = [

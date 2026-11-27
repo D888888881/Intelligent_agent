@@ -88,11 +88,11 @@ CREATIVE_DETAIL_SPECS: dict[int, dict] = {
     },
     9: {
         "action_code": "payoff_product_lifestyle",
-        "density": "minimal",
+        "density": "rich",
         "human": "none",
         "action_en": (
             "Post-use aspiration WITHOUT portrait: product in lifestyle context (window sill, café, gym bag), "
-            "golden light, no application gesture."
+            "same color grade as the set, no golden-hour cast, no application gesture."
         ),
     },
 }

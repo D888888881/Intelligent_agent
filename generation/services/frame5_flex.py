@@ -14,7 +14,8 @@ FRAME_5_VARIANTS: list[dict] = [
         "archetype": "same_category_product_comparison",
         "scene_family": "side_by_side_vs_generic",
         "mandate_en": (
-            "FRAME 5 — Category comparison: our branded SKU vs plain unbranded same-category generic "
+            "FRAME 5 — Category comparison: our branded hero SKU vs plain unbranded SAME product category only "
+            "(e.g. another plain toothpaste tube if hero is toothpaste — NEVER unrelated kitchen gadgets or electronics) "
             "in ONE photograph, side-by-side on shared surface and lighting; our product looks premium, "
             "generic looks dull; highlight visual advantages; NO real competitor logos or trademarks; "
             "NOT a multi-panel collage."
@@ -57,9 +58,9 @@ FRAME_5_VARIANTS: list[dict] = [
         "archetype": "simple_steps_sequence",
         "scene_family": "step_flow_single_image",
         "mandate_en": (
-            "FRAME 5 — Usage steps: 2–4 numbered steps expressed in ONE photograph (sequential props or "
-            "subtle left-to-right flow, NOT a collage grid); product in each step; short Spanish step "
-            "labels; hands allowed cropped, no dominant face; NOT duplicate frame 7 TikTok portrait."
+            "FRAME 5 — In use: one real use moment that fills the frame (cropped hands OK, no face). "
+            "Do not draw a numbered step chart. Add this frame's large Spanish text panel. "
+            "NOT duplicate frame 7 TikTok portrait."
         ),
     },
     {
@@ -71,9 +72,8 @@ FRAME_5_VARIANTS: list[dict] = [
         "archetype": "function_highlights",
         "scene_family": "feature_callout_hero",
         "mandate_en": (
-            "FRAME 5 — Core functions: one hero product with 3–4 visual function cues (icons or minimal "
-            "Spanish tags) integrated in the image; communicates what it DOES; clean TikTok Shop layout; "
-            "not the same layout as index 1 hero."
+            "FRAME 5 — Core functions: one hero product in a filled scene, plus this frame's large "
+            "Spanish text panel explaining the one benefit; not the same layout as index 1 hero."
         ),
     },
     {
@@ -143,8 +143,11 @@ def _build_variant_context(variant_id: str, analysis: dict, usp_fallback: str) -
         kit = "; ".join(includes[:8]) if includes else "all items visible on packaging"
         return f"Kit must show: {kit}."
     if variant_id == "usage_steps":
-        steps = scenarios[:4] if scenarios else ["open", "apply", "enjoy result"]
-        return "Step flow from product use: " + " → ".join(str(s) for s in steps[:4]) + "."
+        return (
+            "Show one real in-use action that matches this product. "
+            "Do not print Step 1, Step 2, Paso 1, or a numbered tutorial. "
+            "The only on-image words are this frame's selling line."
+        )
     if variant_id == "core_functions":
         return f"Visualize core functions: {usp_txt}."
     if variant_id == "ingredient_composition":
@@ -225,7 +228,7 @@ def apply_frame5_flex_variant(plan: dict, *, job=None) -> dict:
         )
     elif density == "minimal":
         shot5["composition_density_lock"] = (
-            "COMPOSITION DENSITY — Minimal: 1–2 elements, generous negative space."
+            "COMPOSITION DENSITY — Fill the frame with the product, the setting, and this frame's text panel."
         )
     else:
         shot5["composition_density_lock"] = (

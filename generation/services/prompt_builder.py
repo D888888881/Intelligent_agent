@@ -2,6 +2,83 @@
 
 from generation.services.image_text_policy import on_image_text_mandate_for_plan
 from generation.services.model_strategy import model_family, reference_prefix_for_model
+from generation.services.product_sku_guard import build_sku_anchor_block
+from generation.services.tk_mx_listing import WHITE_BG_SCENE_PROMPT_EN
+from generation.services.variant_shots import white_bg_variant_lineup_en
+
+FRAME4_PRIORITY_GOAL_EN = (
+    "FRAME 4 PRIMARY GOAL — One photograph: unmistakable BEFORE→AFTER on the SAME efficacy as packaging "
+    "and hero/frame-3 Spanish benefits (product_efficacy_anchor_en + frame4_authoritative_en). "
+    "Model + correct application zone when required (body wash = shower skin+foam, not hair). "
+    "Transformation subject ≥50% of frame. WRONG: wrong category compare, conditioner on body-wash SKU."
+)
+
+
+def _placeholder_on_image(text: str) -> bool:
+    """内部占位编号，不能写进生图提示，否则会被画成标题。"""
+    import re
+
+    return bool(re.search(r"detalle propio|uso concreto|punto\s*\d+", text or "", re.I))
+
+
+def _generic_selling_line(text: str) -> bool:
+    import re
+
+    return bool(
+        re.search(
+            r"detalle propio|uso concreto|punto\s*\d|formula estable|fórmula estable|"
+            r"textura clara|acabado uniforme|calidad premium|f[aá]cil de usar",
+            text or "",
+            re.I,
+        )
+    )
+
+
+def _core_function_prefix(plan: dict, shot: dict) -> str:
+    """每张图开头只带一句功效；带字的图再加自己的一条卖点。"""
+    from generation.services.product_usage_semantics import build_core_function_line_en
+
+    analysis = plan.get("product_analysis") or {}
+    user = (plan.get("user_prompt") or plan.get("subject_lock") or "")[:800]
+    line = (build_core_function_line_en(analysis, user) or "").strip()
+    if not line:
+        line = (plan.get("listing_core_function_en") or "").strip()
+    try:
+        idx = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    if idx in (2, 4):
+        return f"{line} No selling-point text on this image."
+    headline = (shot.get("headline_es") or "").strip()
+    if headline and not _placeholder_on_image(headline) and not _generic_selling_line(headline):
+        return f"{line} THIS FRAME SELLING POINT — «{headline[:56]}» only."
+    return line
+
+
+def _listing_variant_count(plan: dict) -> int:
+    analysis = plan.get("product_analysis") or {}
+    variants = analysis.get("product_variants") or []
+    count = len(variants) if isinstance(variants, list) else 0
+    for raw in (plan.get("variant_count"), plan.get("reference_image_count")):
+        try:
+            count = max(count, int(raw or 0))
+        except (TypeError, ValueError):
+            continue
+    return count
+
+
+def _white_bg_lineup_prompt(shot: dict, plan: dict) -> str:
+    count = _listing_variant_count(plan)
+    if count <= 1:
+        return ""
+    try:
+        idx = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    role = (shot.get("role") or "").strip()
+    if idx == 2 or role == "white_bg_catalog":
+        return white_bg_variant_lineup_en(count)
+    return ""
 
 
 def _safe_text(val, default: str = "") -> str:
@@ -78,8 +155,512 @@ def _reference_guided_attach_block(shot: dict, plan: dict) -> str:
     return " ".join(lines)
 
 
+def _listing_visual_cohesion_early_block(shot: dict, plan: dict) -> str:
+    try:
+        shot_ix = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        shot_ix = 0
+    tpl = (plan.get("plan_template") or "").strip()
+    tk4 = tpl == "tk_mx_ecommerce_9" and shot_ix == 4
+    tk2_white = tpl == "tk_mx_ecommerce_9" and shot_ix == 2
+
+    plan_keys = (
+        "listing_color_temperature_lock_en",
+        "listing_design_system_en",
+        "listing_unified_palette_en",
+        "listing_background_variety_policy_en",
+        "creative_set_cohesion_en",
+        "creative_color_system_lock_en",
+        "creative_scene_family_lock_en",
+        "creative_background_variety_en",
+        "listing_camera_mandate_strict_en",
+        "listing_product_pose_diversity_en",
+        "listing_conversion_master_en",
+        "listing_usp_roster_en",
+        "listing_matrix_obey_en",
+        "listing_tk_matrix_obey_en",
+        "listing_human_mandate_en",
+        "product_usage_master_en",
+        "listing_frame_focus_discipline_en",
+        "listing_nine_frame_doctrine_zh",
+        "creative_concept_mandate_en",
+    )
+    if tk4:
+        plan_keys = tuple(
+            k
+            for k in plan_keys
+            if k
+            not in (
+                "listing_conversion_master_en",
+                "listing_usp_roster_en",
+                "creative_concept_mandate_en",
+                "creative_scene_family_lock_en",
+                "creative_background_variety_en",
+                "creative_set_cohesion_en",
+                "listing_nine_frame_doctrine_zh",
+            )
+        )
+    if tk2_white:
+        plan_keys = tuple(
+            k
+            for k in plan_keys
+            if k
+            not in (
+                "listing_product_pose_diversity_en",
+                "listing_camera_mandate_strict_en",
+                "listing_human_mandate_en",
+            )
+        )
+
+    chunks: list[str] = []
+    for key in plan_keys:
+        block = (plan.get(key) or "").strip()
+        if block:
+            chunks.append(block)
+    for key in (
+        "listing_background_strategy_en",
+        "listing_palette_lock_en",
+        "hero_color_harmony_en",
+        "frame_single_focus_en",
+    ):
+        block = (shot.get(key) or "").strip()
+        if block:
+            chunks.append(block)
+    if chunks:
+        mode = (plan.get("background_mode") or "random").strip().lower()
+        theme = (plan.get("listing_theme_color_en") or "the packaging dominant color").strip()
+        if mode == "solid_virtual":
+            unity = (
+                "LISTING VISUAL UNITY — One campaign, one theme color. "
+                f"Except the white catalog frame, every background is a virtual solid/gradient in {theme}. "
+                "Do not change hue between frames."
+            )
+        elif mode == "real_environment":
+            unity = (
+                "LISTING VISUAL UNITY — One campaign, one theme color. "
+                f"Except the white catalog frame, every background is a real environment graded in {theme}. "
+                "Do not change hue or location family between frames."
+            )
+        else:
+            from generation.services.listing_visual_cohesion import _forbidden_drift
+
+            unity = (
+                "LISTING VISUAL UNITY — One campaign, one color grade. "
+                f"Every frame, including lifestyle and closing frames, stays in {theme}. "
+                f"{_forbidden_drift(theme)} "
+                "Background type may change. Hue may not."
+            )
+        chunks.insert(0, unity)
+    return " ".join(chunks)
+
+
+def _angle_placement_priority_block(shot: dict, plan: dict, *, is_white_catalog: bool = False) -> str:
+    """P0：机位/摆放 mandate 前置，优先于场景长文案。"""
+    chunks: list[str] = []
+    pose_div = (plan.get("listing_product_pose_diversity_en") or "").strip()
+    if pose_div and not is_white_catalog:
+        chunks.append(pose_div)
+    pose = (shot.get("product_pose_lock_en") or "").strip()
+    if pose:
+        chunks.append(pose)
+    elif is_white_catalog:
+        chunks.append(
+            "PRODUCT PHYSICAL POSE — Upright vertical front catalog on white (this index only)."
+        )
+    orient = (shot.get("orientation_lock") or "").strip()
+    if orient:
+        chunks.append(f"MANDATORY PRODUCT ORIENTATION — {orient}")
+    mandate = (shot.get("composition_mandate") or "").strip()
+    if mandate:
+        chunks.append(mandate)
+    placement = (shot.get("placement_lock") or "").strip()
+    if placement:
+        chunks.append(placement)
+    mode = (shot.get("reference_mode") or plan.get("default_reference_mode") or "").lower()
+    if mode == "identity":
+        if is_white_catalog:
+            chunks.append(
+                "REFERENCE USE (WHITE CATALOG) — Lock SKU packaging/label/colors from attachment; "
+                "REDRAW the product UPRIGHT vertical front-facing on pure #FFFFFF even if the upload is tilted or lying; "
+                "ignore reference product rotation — compliance upright catalog pose ONLY (0° tilt)."
+            )
+        else:
+            chunks.append(
+                "REFERENCE USE — Attached image locks SKU packaging, label, colors only; "
+                "do NOT copy its camera angle, crop, upright standing pose, or product rotation. "
+                "Physical pack pose MUST follow PRODUCT PHYSICAL POSE above (tilt/recline/horizontal/top-down/worm's-eye)."
+            )
+    elif mode in ("none", "no", "false"):
+        chunks.append(
+            "NO REFERENCE IMAGE — Execute camera and placement mandates exactly; "
+            "product graphics must match identity text below; "
+            "same product category as plan anchor — never unrelated objects; unique vs other frames."
+        )
+    tier = (plan.get("shot_reference_tier_en") or "").strip()
+    if tier and mode in ("none", "no", "identity"):
+        pass  # tier is plan-level; angle lock below is enough
+    if not is_white_catalog:
+        angle_lock = (plan.get("listing_angle_diversity_lock_en") or "").strip()
+        if angle_lock:
+            chunks.append(angle_lock)
+    return " ".join(chunks)
+
+
+def _build_frame2_variant_lineup_prompt(plan: dict) -> str:
+    """白底多款：短提示放在最前，避免被 8000 字截断后只剩「居中一个商品」。"""
+    count = _listing_variant_count(plan)
+    prefix = _core_function_prefix(plan, {"index": 2})
+    return (
+        f"{prefix} "
+        f"WHITE CATALOG. One photograph on pure #FFFFFF. No text, no icons, no people. "
+        f"Draw all {count} attached reference products in one horizontal row, left to right, "
+        "in the same order as the attached images. "
+        "Each item keeps the color and pattern of its own photo. "
+        "Do not keep only the first color. Do not recolor the others to match the first. "
+        "Front view, even light, soft shadow, every item fully visible, not overlapping. "
+        "Not a panel collage. Not a before-and-after. Not a hair photo. "
+        "If the references are scarves or clothing, show every color of that item."
+    )
+
+
+# 每个品类只留自己的对比词。第 4 张提示里一旦出现其他品类的词，就整段退回这一张单。
+_FRAME4_SIGNATURES: dict[str, tuple[str, ...]] = {
+    "hair": ("frizzy", "hair strand"),
+    "body_bath": ("body wash", "body skin", "shower gel"),
+    "hand_wash": ("hand wash", "germ speck"),
+    "home_clean": ("toilet",),
+    "body_deo": ("underarm",),
+    "nail_fungus": ("nail plate",),
+    "oral": ("teeth",),
+    "skin_face": ("facial skin",),
+    "wearable": ("scarf",),
+    "body_hand": ("lotion",),
+}
+
+
+def _frame4_card_text(zone: str, *, spray: bool, exfoliation: bool = False, body_scrub: bool = False) -> str:
+    """第 4 张只允许一个对比主体。"""
+    if zone == "hair":
+        spray_line = " The nozzle points at the hair." if spray else ""
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the hair strands."
+            " The action smooths the hair and controls frizz."
+            " LEFT: frizzy dull hair."
+            " RIGHT: the same hair smooth and shiny."
+            " UNCHANGED: the package shape."
+            f"{spray_line}"
+            " No text on image."
+        )
+    if zone == "body_bath":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: body skin in the shower."
+            " LEFT: dull body skin."
+            " RIGHT: the same skin with cleansing foam."
+            " UNCHANGED: the wall, the tiles, the floor, and the bottle shape."
+            " No text on image."
+        )
+    if zone == "hand_wash":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the hands."
+            " LEFT: many small germ specks on the hands."
+            " RIGHT: the same hands with those specks gone."
+            " UNCHANGED: the bottle shape."
+            " No text on image."
+        )
+    if zone == "nail_fungus":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the nail plate."
+            " LEFT: a yellowed stained nail."
+            " RIGHT: the same nail looking clearer and more cared for."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    if zone == "body_deo":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the underarm."
+            " LEFT: the underarm before use."
+            " RIGHT: the same underarm after the product is applied."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    if zone == "wearable":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: wearing this scarf."
+            " LEFT: the outfit without the scarf."
+            " RIGHT: the same outfit wearing this scarf."
+            " UNCHANGED: the package colors and the person's hair."
+            " No text on image."
+        )
+    if zone == "skin_face":
+        if exfoliation:
+            return (
+                "ONE photo of the attached product."
+                " COMPARISON SUBJECT: the face."
+                " The action is gentle exfoliation of the facial surface."
+                " LEFT: dull facial skin."
+                " RIGHT: the same face smoother and more luminous."
+                " UNCHANGED: the package shape."
+                " No text on image."
+            )
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: facial skin."
+            " LEFT: dull facial skin."
+            " RIGHT: the same facial skin looking fresher."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    if zone == "oral":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the teeth."
+            " LEFT: dull teeth."
+            " RIGHT: the same teeth looking cleaner."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    if zone == "body_hand":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: skin with this lotion."
+            " LEFT: dry skin."
+            " RIGHT: the same skin looking softer."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    if zone == "home_clean":
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: the fixture this cleaner treats."
+            " LEFT: that fixture before cleaning."
+            " RIGHT: the same fixture after cleaning."
+            " UNCHANGED: the bottle shape."
+            " No text on image."
+        )
+    if body_scrub:
+        return (
+            "ONE photo of the attached product."
+            " COMPARISON SUBJECT: body skin."
+            " The action is exfoliating the body surface."
+            " LEFT: dull body skin."
+            " RIGHT: the same body skin smoother."
+            " UNCHANGED: the package shape."
+            " No text on image."
+        )
+    return (
+        "ONE photo of the attached product."
+        " COMPARISON SUBJECT: the result named on the package."
+        " LEFT: that result before this product is used."
+        " RIGHT: the same subject after this product is used."
+        " UNCHANGED: the package shape."
+        " No text on image."
+    )
+
+
+def _frame4_prompt_is_single_subject(zone: str, text: str) -> bool:
+    low = (text or "").lower()
+    for other, signatures in _FRAME4_SIGNATURES.items():
+        if other == zone:
+            continue
+        if any(signature in low for signature in signatures):
+            return False
+    return True
+
+
+def _build_frame4_isolated_prompt(shot: dict, plan: dict, *, attach_reference: bool = False) -> str:
+    """图4：只有一个对比主体。混入其他品类的词时，退回这张单。"""
+    from generation.services.listing_frame4_contract import apply_frame4_comparison_contract
+
+    plan = apply_frame4_comparison_contract(dict(plan))
+    contract = plan.get("frame4_comparison_contract") or {}
+    zone = (contract.get("zone") or "").strip() or "generic"
+    analysis = plan.get("product_analysis") or {}
+    blob = " ".join(
+        str(analysis.get(k) or "")
+        for k in (
+            "product_name_en",
+            "product_name_es",
+            "product_name_zh",
+            "label_text_exact",
+            "primary_function",
+            "upload_name_hint",
+            "package_ocr_text",
+        )
+    )
+    low = blob.lower()
+    spray = zone == "hair" and any(w in low or w in blob for w in ("spray", "aerosol", "bruma", "mist", "喷雾"))
+    from generation.services.product_usage_semantics import is_body_scrub, is_facial_exfoliation
+
+    user = (plan.get("user_prompt") or plan.get("subject_lock") or "")[:800]
+    evidence = " ".join(
+        [
+            blob,
+            " ".join(str(x) for x in (analysis.get("spanish_headlines") or [])[:8]),
+            " ".join(str(x) for x in (analysis.get("key_selling_points") or [])[:8]),
+            user,
+        ]
+    )
+    card = _frame4_card_text(
+        zone,
+        spray=spray,
+        exfoliation=zone == "skin_face" and is_facial_exfoliation(evidence),
+        body_scrub=zone == "generic" and is_body_scrub(evidence),
+    )
+    shape = ""
+    if attach_reference:
+        shape = (
+            " PACKAGE SHAPE LOCK — Copy the reference package outline, cap, label, colors, and proportions."
+        )
+    clean = f"{_core_function_prefix(plan, shot)} {card}{shape}"
+    parts = [card]
+    if shape:
+        parts.append(shape.strip())
+    style_lock = (plan.get("listing_style_lock_en") or "").strip()
+    if style_lock:
+        parts.append(style_lock)
+    design = (plan.get("listing_design_system_en") or "").strip()
+    if design:
+        parts.append("Same campaign background as the set. No marketing type on this frame.")
+    full = f"{_core_function_prefix(plan, shot)} " + " ".join(parts)
+    if not _frame4_prompt_is_single_subject(zone, full):
+        full = clean
+    return _guard_contact_prompt(zone, full, clean)
+
+
+_FACE_CONTACT_MARKERS = (
+    "cheek",
+    "forehead",
+    "facial skin",
+    "face cream",
+    "on the face",
+    "facial serum",
+)
+_UNDERARM_CONTACT_MARKERS = ("underarm", "armpit", "axila")
+
+
+def _guard_contact_prompt(zone: str, text: str, clean: str) -> str:
+    low = (text or "").lower()
+    if zone == "body_deo" and any(marker in low for marker in _FACE_CONTACT_MARKERS):
+        return clean
+    if zone == "skin_face" and any(marker in low for marker in _UNDERARM_CONTACT_MARKERS):
+        return clean
+    return text
+
+
+def _frame6_contact_prompt(shot: dict, plan: dict) -> str:
+    """图6：除臭只写腋下，面部护肤只写脸。精华质地不决定涂抹位置。"""
+    from generation.services.product_usage_semantics import reconcile_application_zone
+
+    analysis = dict(plan.get("product_analysis") or {})
+    user = (plan.get("user_prompt") or plan.get("subject_lock") or "")[:800]
+    zone = reconcile_application_zone(analysis, user)
+    headline = (shot.get("headline_es") or "").strip()[:56]
+    if zone == "body_deo":
+        if not headline or not any(
+            w in headline.lower() for w in ("axila", "odor", "fresh", "fresco", "protección", "protection")
+        ):
+            headline = "Odor protection all day"
+        card = (
+            "ONE photo of this deodorant on the underarm only. "
+            "Raised arm. The product touches the underarm. "
+            "No other benefit line."
+        )
+    elif zone == "generic":
+        from generation.services.product_usage_semantics import is_body_scrub
+
+        evidence = " ".join(
+            [
+                str(analysis.get("label_text_exact") or ""),
+                str(analysis.get("product_name_en") or ""),
+                str(analysis.get("primary_function") or ""),
+                user,
+            ]
+        )
+        headline = ""
+        if is_body_scrub(evidence):
+            card = (
+                "ONE photo. The action is exfoliating body skin. "
+                "The product touches body skin. "
+                "The result is smoother body skin."
+            )
+        else:
+            card = (
+                "ONE photo. Read the words printed on the attached package. "
+                "Show that product's own result. "
+                "The headline copies one claim printed on the package."
+            )
+    else:
+        from generation.services.product_usage_semantics import is_facial_exfoliation
+
+        evidence = " ".join(
+            [
+                " ".join(str(analysis.get(k) or "") for k in (
+                    "label_text_exact",
+                    "product_name_en",
+                    "product_name_es",
+                    "primary_function",
+                )),
+                " ".join(str(x) for x in (analysis.get("spanish_headlines") or [])[:8]),
+                user,
+            ]
+        )
+        if is_facial_exfoliation(evidence):
+            card = (
+                "ONE photo. The action is gentle exfoliation on the face. "
+                "The product touches facial skin. "
+                "The result is smoother, more luminous skin. "
+                "No other benefit line."
+            )
+        else:
+            if not headline:
+                headline = "Cuidado en el rostro"
+            card = (
+                "ONE photo of this skincare product on the face. "
+                "The product touches facial skin. "
+                "No other benefit line."
+            )
+    shot_for_prefix = dict(shot)
+    shot_for_prefix["headline_es"] = headline
+    clean = f"{_core_function_prefix(plan, shot_for_prefix)} {card}"
+    return _guard_contact_prompt(zone, clean, clean)
+
+
 def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bool = False) -> str:
-    parts: list[str] = []
+    try:
+        _gate_idx = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        _gate_idx = 0
+    if (plan.get("plan_template") or "") == "tk_mx_ecommerce_9" and _gate_idx == 4:
+        return _build_frame4_isolated_prompt(shot, plan, attach_reference=attach_reference)
+    if (plan.get("plan_template") or "") == "tk_mx_ecommerce_9" and _gate_idx == 6:
+        from generation.services.product_usage_semantics import reconcile_application_zone
+
+        _zone6 = reconcile_application_zone(
+            plan.get("product_analysis") or {},
+            (plan.get("user_prompt") or plan.get("subject_lock") or "")[:800],
+        )
+        if _zone6 in ("body_deo", "skin_face", "generic"):
+            return _frame6_contact_prompt(shot, plan)
+    if _gate_idx == 2 and _listing_variant_count(plan) > 1:
+        return _build_frame2_variant_lineup_prompt(plan)
+
+    parts: list[str] = [_core_function_prefix(plan, shot)]
+    style_lock = (plan.get("listing_style_lock_en") or shot.get("set_style_lock_en") or "").strip()
+    if style_lock and (plan.get("plan_template") or "") in ("tk_mx_ecommerce_9", "amazon_listing_7"):
+        parts.append(style_lock)
+    design_lock = (plan.get("listing_design_system_en") or "").strip()
+    if design_lock and (plan.get("plan_template") or "") in ("tk_mx_ecommerce_9", "amazon_listing_7"):
+        parts.append(design_lock)
+    role_supremacy = (shot.get("tk_frame_role_supremacy_en") or shot.get("tk_frame_role_preamble_en") or "").strip()
+    if role_supremacy:
+        parts.append(role_supremacy)
+
     family = plan.get("image_model_family") or model_family(plan.get("image_model"))
     if attach_reference and family == "gpt_image":
         parts.append(
@@ -94,13 +675,82 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     if quality:
         parts.append(quality)
 
+    try:
+        _idx_top = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        _idx_top = 0
+    tpl_top = (plan.get("plan_template") or "").strip()
+    if tpl_top == "tk_mx_ecommerce_9":
+        if _idx_top == 4:
+            efficacy = (
+                (shot.get("frame4_efficacy_anchor_en") or "").strip()
+                or (plan.get("listing_product_efficacy_anchor_en") or "").strip()
+                or ((plan.get("product_analysis") or {}).get("product_efficacy_anchor_en") or "").strip()
+            )
+            auth4_top = (
+                (shot.get("frame4_authoritative_en") or "").strip()
+                or ((plan.get("product_analysis") or {}).get("frame4_authoritative_en") or "").strip()
+            )
+            if efficacy:
+                parts.append(efficacy)
+            if auth4_top:
+                parts.append(auth4_top)
+            parts.append(FRAME4_PRIORITY_GOAL_EN)
+            sp = (shot.get("frame4_visual_split_en") or "").strip()
+            if sp:
+                parts.append(sp)
+        elif _idx_top not in (2, 4):
+            typo_pri = (shot.get("on_image_text_non_negotiable_en") or "").strip()
+            if typo_pri:
+                parts.append(typo_pri)
+
+    cohesion_early = _listing_visual_cohesion_early_block(shot, plan)
+    try:
+        _focus_idx = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        _focus_idx = 0
+    _single_focus = (shot.get("frame_single_focus_en") or "").strip()
+    _detail_macro = (shot.get("frame3_variant") or "") == "product_detail_macro"
+    if _single_focus:
+        parts.append(_single_focus)
+
+    if cohesion_early and plan.get("plan_template") != "reference_guided":
+        parts.append(cohesion_early)
+
+    try:
+        shot_idx_early = int(shot.get("index") or 0)
+    except (TypeError, ValueError):
+        shot_idx_early = 0
+    role_early = (shot.get("role") or "").strip()
+    is_white_catalog = role_early == "white_bg_catalog" or shot_idx_early == 2
+
     parts.append(on_image_text_mandate_for_plan(plan))
     typo = _safe_text(plan.get("on_image_text_density_mandate_en"))
-    if typo:
+    skip_typo_global = is_white_catalog or shot_idx_early == 4
+    if typo and not skip_typo_global:
         parts.append(typo)
+    if shot_idx_early == 4 and (plan.get("plan_template") or "") == "tk_mx_ecommerce_9":
+        parts.append(
+            "TK FRAME 4 OUTPUT TYPE — Fixed: single-photo before→after visual contrast ONLY; "
+            "not trust lifestyle, not category compare, not hero headline layout."
+        )
     usp_div = _safe_text(plan.get("listing_usp_diversity_lock_en"))
-    if usp_div:
+    if usp_div and not is_white_catalog and shot_idx_early not in (2, 4):
         parts.append(usp_div)
+
+    priority_angle = _angle_placement_priority_block(shot, plan, is_white_catalog=is_white_catalog)
+    if priority_angle:
+        parts.append(priority_angle)
+
+    parts.append(build_sku_anchor_block(plan, shot))
+
+    lineup_prompt = _white_bg_lineup_prompt(shot, plan) if is_white_catalog else ""
+    if is_white_catalog:
+        parts.append(lineup_prompt or WHITE_BG_SCENE_PROMPT_EN)
+        parts.append(
+            "FRAME ROLE LOCK — This is index-2 compliance catalog ONLY. "
+            "Ignore any other-frame marketing, hero, or comparison instructions."
+        )
 
     if plan.get("plan_template") == "reference_guided":
         parts.append(_reference_guided_attach_block(shot, plan))
@@ -118,18 +768,19 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
         identity_lock = f"{identity_lock} Exact label text: {label_exact}".strip()
 
     variants = analysis.get("product_variants") or []
-    is_showcase = bool(shot.get("use_all_reference_images")) or (
-        (shot.get("role") or "") == "multi_variant_showcase"
+    family = (plan.get("variant_family_lock_en") or "").strip()
+    if family and _listing_variant_count(plan) > 1:
+        parts.append(family)
+    is_showcase = bool(lineup_prompt) or (
+        (shot.get("role") or "") == "multi_variant_showcase" and bool(shot.get("use_all_reference_images"))
     )
 
     if is_showcase and isinstance(variants, list) and len(variants) > 1:
         catalog = (shot.get("multi_variant_catalog_en") or plan.get("variants_catalog_en") or "").strip()
         parts.append(
-            "MULTI-VARIANT SHOWCASE — One single professional e-commerce photograph showing ALL colorways and styles "
-            "listed below together (e.g. lipsticks in a row, multi-color sneakers side-by-side, "
-            "bras/camisoles/underwear in a color lineup, mixed sizes only if listed). "
+            "MULTI-VARIANT SHOWCASE — One photograph showing every style of THIS product together. "
             "Single real photo, not a collage grid with panels or contact sheet. "
-            "Each SKU must match its variant identity (color + style + material); do not duplicate one item."
+            "Each unit matches its own reference; do not duplicate one style and do not switch to another product category."
         )
         if catalog:
             parts.append(f"All variants to include: {catalog}")
@@ -164,22 +815,38 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
 
     orient = (shot.get("orientation_lock") or "").strip()
     if orient:
-        parts.append(
-            "MANDATORY PRODUCT ORIENTATION (override reference photo pose — rotate product accordingly): "
-            f"{orient}"
-        )
+        if is_white_catalog:
+            parts.append(f"MANDATORY WHITE-CATALOG ORIENTATION — {orient}")
+        else:
+            parts.append(
+                "MANDATORY PRODUCT ORIENTATION (override reference photo pose — rotate product accordingly): "
+                f"{orient}"
+            )
 
     roster = plan.get("camera_roster") or {}
     try:
         cur_idx = int(shot.get("index") or 0)
     except (TypeError, ValueError):
         cur_idx = 0
-    if roster and cur_idx:
+    if roster and cur_idx and not is_white_catalog:
         others = [f"#{i} uses {roster[i]}" for i in sorted(roster.keys()) if i != cur_idx]
         if others:
             parts.append(
                 "Angle diversity lock — other frames already use these orientations; "
                 f"this frame must differ: {'; '.join(others)}."
+            )
+    pose_roster = plan.get("listing_product_pose_roster") or {}
+    if pose_roster and cur_idx and not is_white_catalog:
+        others_pose = [
+            f"#{i} pose: {pose_roster[i][:70]}"
+            for i in sorted(pose_roster.keys())
+            if i != cur_idx and pose_roster.get(i)
+        ]
+        if others_pose:
+            parts.append(
+                "Product physical pose roster — do NOT repeat these staging types: "
+                + "; ".join(others_pose[:8])
+                + "."
             )
 
     if identity_lock and not shot.get("ingredient_composition_only"):
@@ -204,7 +871,7 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
 
             parts.append(build_ingredient_frame_lock_en(plan))
     product_action = (shot.get("product_action_lock_en") or "").strip()
-    if product_action:
+    if product_action and not is_white_catalog:
         parts.append(product_action)
     set_actions = (plan.get("action_set_diversity_en") or "").strip()
     if set_actions:
@@ -262,7 +929,32 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
                 "color accent) plus Spanish headline zone; NOT a plain catalog packshot."
             )
     elif role == "usp_primary":
-        if is_amazon and shot_idx == 4 and (shot.get("frame4_variant") or "") == "scene_immersion":
+        if (
+            not is_amazon
+            and shot_idx == 4
+            and (plan.get("plan_template") or "") == "tk_mx_ecommerce_9"
+        ):
+            parts.append(
+                "Frame type: TK INDEX 4 — mandatory before→after use transformation in ONE photo "
+                "(visual contrast ONLY — zero overlay marketing text; no antes/después comparison labels)."
+            )
+            auth4 = (shot.get("frame4_authoritative_en") or "").strip()
+            if not auth4:
+                auth4 = ((plan.get("product_analysis") or {}).get("frame4_authoritative_en") or "").strip()
+            if auth4:
+                parts.append(auth4)
+            split4 = (shot.get("frame4_visual_split_en") or "").strip()
+            if not split4:
+                split4 = ((plan.get("product_analysis") or {}).get("frame4_visual_split_en") or "").strip()
+            if split4:
+                parts.append(split4)
+            subj = (shot.get("frame4_subject_lock_en") or "").strip()
+            scene4 = (shot.get("frame4_scene_lock_en") or "").strip()
+            if subj:
+                parts.append(subj)
+            if scene4:
+                parts.append(scene4)
+        elif is_amazon and shot_idx == 4 and (shot.get("frame4_variant") or "") == "scene_immersion":
             geo = (plan.get("scene_geo_en") or "local").strip()
             parts.append(
                 f"Frame type: Amazon scene immersion — authentic {geo} daily-life usage context; "
@@ -293,7 +985,7 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
                 "distinct from index 8 pure value story."
             ),
             "usage_steps": (
-                "Frame type: 2–4 usage steps in ONE photo (flow, not collage grid); short Spanish step tags."
+                "Frame type: one in-use moment matching the product; no numbered step chart, no Step 1 / Step 2 text."
             ),
             "core_functions": (
                 "Frame type: core function highlights — 3–4 feature cues with minimal Spanish callouts."
@@ -333,11 +1025,17 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
                 f"Frame type: Amazon scene immersion — product in authentic {geo} daily context; "
                 "natural light; purchase代入感; no before/after split; no dominant face."
             )
+        elif shot_idx == 6 and tpl_top == "tk_mx_ecommerce_9":
+            ben = (shot.get("frame6_benefit_lock_en") or "").strip()
+            parts.append(
+                "Frame type: TK INDEX 6 — usage benefit: what the user gains after using the product; "
+                "model allowed; mandatory Spanish benefit headline on image; NOT frame-4 before/after split."
+            )
+            if ben:
+                parts.append(ben)
         else:
             parts.append(
-                "Frame type: real-life trust — product naturally placed in authentic daily scene "
-                "(home, bathroom, bedroom, kitchen, street café, or office); natural light, no sterile macro; "
-                "no dominant face."
+                "Frame type: usage benefit — payoff after use with mandatory Spanish headline; model allowed."
             )
     elif role == "ease_objection":
         demo = (shot.get("feature_demo_lock_en") or "").strip()
@@ -400,7 +1098,8 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     pillar = (shot.get("marketing_pillar") or "").strip()
     archetype = (shot.get("visual_archetype") or "").strip()
     scene_family = (shot.get("scene_family") or "").strip()
-    if pillar:
+    _minimal_story = _detail_macro or (shot.get("frame3_variant") or "") == "ingredient_composition"
+    if pillar and not is_white_catalog and not _minimal_story and shot_idx != 4:
         q = (shot.get("consumer_question") or "").strip()
         parts.append(
             f"ECOMMERCE STORY BEAT — {pillar}. Answer in the image: {q}. "
@@ -416,6 +1115,8 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     if action_lock:
         parts.append(action_lock)
     creative_dir = (shot.get("creative_detail_direction_en") or "").strip()
+    if creative_dir and shot_idx == 4:
+        creative_dir = ""
     if creative_dir:
         parts.append(creative_dir)
     density_lock = (shot.get("composition_density_lock") or "").strip()
@@ -514,16 +1215,12 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     story_theme = (plan.get("listing_story_theme_en") or "").strip()
     if story_theme:
         parts.append(story_theme)
-    color_mood = (plan.get("listing_color_mood_en") or "").strip()
-    if color_mood:
-        parts.append(f"Color mood for entire listing set: {color_mood}")
+    if not plan.get("listing_unified_palette_en"):
+        color_mood = (plan.get("listing_color_mood_en") or "").strip()
+        if color_mood:
+            parts.append(f"Color mood for entire listing set: {color_mood}")
 
-    for plan_cohesion_key in (
-        "creative_set_cohesion_en",
-        "creative_color_system_lock_en",
-        "creative_scene_family_lock_en",
-        "creative_camera_innovation_lock_en",
-    ):
+    for plan_cohesion_key in ("creative_camera_innovation_lock_en",):
         block = (plan.get(plan_cohesion_key) or "").strip()
         if block:
             parts.append(block)
@@ -540,10 +1237,6 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     if layout_lock:
         parts.append(layout_lock)
 
-    angle_lock = (plan.get("listing_angle_diversity_lock_en") or "").strip()
-    if angle_lock:
-        parts.append(angle_lock)
-
     story_arc = (plan.get("conversion_story_lock_en") or "").strip()
     if story_arc and role in (
         "pain_empathy",
@@ -552,35 +1245,32 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
         "value_stack",
         "lifestyle_payoff",
         "hero_hook",
-        "usp_primary",
-    ):
+    ) and shot_idx != 4:
         parts.append(story_arc)
 
     usp_lock = (shot.get("usp_message_lock") or "").strip()
-    if usp_lock:
+    if (
+        usp_lock
+        and not _placeholder_on_image(usp_lock)
+        and not is_white_catalog
+        and shot_idx != 4
+        and not _detail_macro
+    ):
         parts.append(usp_lock)
+    required_txt = (shot.get("on_image_text_required_en") or "").strip()
+    if (
+        required_txt
+        and not _placeholder_on_image(required_txt)
+        and shot_idx not in (2, 4)
+        and not is_white_catalog
+    ):
+        parts.append(required_txt)
     layout_hint = (shot.get("on_image_text_layout_en") or "").strip()
-    if layout_hint:
+    if layout_hint and shot_idx not in (2, 4):
         parts.append(layout_hint)
     exclusive = (shot.get("exclusive_usp_en") or "").strip()
-    if exclusive:
+    if exclusive and not is_white_catalog and not _placeholder_on_image(exclusive):
         parts.append(f"Exclusive angle (do not duplicate other frames): {exclusive}")
-
-    roster_es = plan.get("listing_message_roster_es") or {}
-    try:
-        cur_idx = int(shot.get("index") or 0)
-    except (TypeError, ValueError):
-        cur_idx = 0
-    if roster_es and cur_idx:
-        others = [
-            f"#{i} already uses «{roster_es[i]}»"
-            for i in sorted(roster_es.keys())
-            if i != cur_idx and roster_es.get(i)
-        ]
-        if others:
-            parts.append(
-                "Other frames' Spanish messages (do NOT repeat): " + "; ".join(others[:8]) + "."
-            )
 
     for lock_key in (
         "material_story_lock",
@@ -592,24 +1282,69 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
         "frame9_content_lock",
         "conversion_story_lock",
         "set_cohesion_lock_en",
+        "hero_sku_mandatory_en",
+        "frame4_efficacy_anchor_en",
+        "conversion_visual_lock_en",
+        "human_cast_mandatory_en",
+        "human_cast_encourage_en",
+        "product_usage_frame_lock_en",
+        "product_usage_zone_en",
+        "frame4_subject_lock_en",
+        "frame4_scene_lock_en",
+        "frame4_visual_split_en",
+        "frame4_no_text_lock_en",
+        "on_image_text_required_en",
+        "on_image_text_non_negotiable_en",
+        "frame6_benefit_lock_en",
+        "frame4_model_lock_en",
+        "tk_frame_role_preamble_en",
+        "tk_frame_role_supremacy_en",
     ):
+        if shot_idx == 4 and lock_key in (
+            "conversion_visual_lock_en",
+            "frame4_efficacy_anchor_en",
+            "product_usage_frame_lock_en",
+            "frame4_visual_split_en",
+            "transformation_story_lock",
+            "frame4_content_lock",
+        ):
+            continue
         block = (shot.get(lock_key) or "").strip()
         if block:
             parts.append(block)
 
+    hair_en = (shot.get("human_cast_hair_en") or "").strip()
+    body_en = (shot.get("human_cast_body_en") or "").strip()
+    if hair_en:
+        parts.append(hair_en)
+    if body_en:
+        parts.append(body_en)
+
     cast_mode = (shot.get("human_cast_mode") or "").strip().lower()
-    if cast_mode == "none":
+    mandatory_human = (shot.get("human_cast_mandatory_en") or "").strip()
+    must_model = mandatory_human or shot.get("human_cast_mandatory")
+    if mandatory_human:
+        parts.append(mandatory_human)
+    elif cast_mode == "hair" and not hair_en:
         parts.append(
-            "NO HUMAN — This frame must be product-only or environment-only; "
-            "no face, no hands, no model silhouette."
+            "HAIR VISIBLE — Show hair transformation in frame (strands/back of head); "
+            "not product-only still life without transformation subject."
+        )
+    elif cast_mode in ("full", "face") or (shot_idx in (4, 7) and must_model):
+        parts.append(
+            "HUMAN REQUIRED — Include a photorealistic person as specified; "
+            "face or upper body visible; product in use; do NOT omit the model."
         )
     elif cast_mode == "hands":
         parts.append(
             "HUMAN PRESENCE — Hands/forearms only; crop above wrists; no full face in frame."
         )
-    elif cast_mode == "face":
+    elif cast_mode in ("hair", "body"):
+        pass
+    elif cast_mode == "none" and not must_model:
         parts.append(
-            "HUMAN PRESENCE — Face or skin crop allowed; avoid full-body duplicate of other frames."
+            "NO HUMAN — This frame must be product-only or environment-only; "
+            "no face, no hands, no model silhouette."
         )
 
     batch_idx = plan.get("visual_batch_index")
@@ -623,14 +1358,37 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
     parts.append("SCENE DIRECTION:")
 
     prompt_en = (shot.get("prompt_en") or "").strip()
-    if prompt_en:
+    tpl_scene = (plan.get("plan_template") or "").strip()
+    if is_white_catalog:
+        parts.append(_white_bg_lineup_prompt(shot, plan) or WHITE_BG_SCENE_PROMPT_EN)
+    elif shot_idx == 4 and tpl_scene == "tk_mx_ecommerce_9":
+        scene4 = " ".join(
+            x
+            for x in (
+                shot.get("frame4_efficacy_anchor_en"),
+                plan.get("listing_product_efficacy_anchor_en"),
+                shot.get("frame4_authoritative_en"),
+                (plan.get("product_analysis") or {}).get("frame4_authoritative_en"),
+                shot.get("product_usage_frame_lock_en"),
+                shot.get("frame4_subject_lock_en"),
+                shot.get("frame4_scene_lock_en"),
+                shot.get("frame4_model_lock_en"),
+            )
+            if (x or "").strip()
+        )[:2400]
+        parts.append(scene4 or FRAME4_PRIORITY_GOAL_EN)
+    elif prompt_en:
         parts.append(prompt_en)
 
     try:
         shot_idx = int(shot.get("index") or 0)
     except (TypeError, ValueError):
         shot_idx = 0
-    skip_marketing_text = role == "white_bg_catalog" or shot_idx == 2
+    skip_marketing_text = (
+        role == "white_bg_catalog"
+        or shot_idx in (2, 4)
+        or is_white_catalog
+    )
 
     if not skip_marketing_text:
         headline_es = (shot.get("headline_es") or "").strip()
@@ -638,20 +1396,56 @@ def build_shot_generation_prompt(shot: dict, plan: dict, *, attach_reference: bo
         icon_bullets = shot.get("icon_bullets_es") or []
         if isinstance(icon_bullets, str):
             icon_bullets = [s.strip() for s in icon_bullets.split("|") if s.strip()]
-        if headline_es:
-            parts.append(f"On-image Spanish headline line 1 (Español México, SEO): {headline_es}")
-        if subhead_es:
-            parts.append(f"On-image Spanish headline line 2: {subhead_es}")
+        if headline_es and not _placeholder_on_image(headline_es) and not _generic_selling_line(headline_es):
+            parts.append(
+                "Designed Spanish title for THIS frame only. Render THIS set's TITLE TREATMENT exactly: "
+                "color block when that treatment is named, thin line only when that treatment is named. "
+                f"Bold headline: {headline_es}."
+            )
+        elif headline_es:
+            headline_es = ""
+        if subhead_es and not _placeholder_on_image(subhead_es) and not _generic_selling_line(subhead_es):
+            parts.append(
+                "Two-line introduction under the headline, explaining that same benefit: "
+                f"{subhead_es}"
+            )
+        icon_bullets = [
+            b for b in icon_bullets
+            if not _placeholder_on_image(str(b)) and not _generic_selling_line(str(b))
+        ]
         if icon_bullets:
             parts.append(
-                "On-image bottom ICON bullets (2-3 Spanish words each, simple circles): "
+                "Three proof lines under the introduction, still about that same benefit: "
                 + "; ".join(str(b) for b in icon_bullets[:3])
             )
+        parts.append(
+            "SCENE — fill the rest of the frame edge to edge: foreground, the product, and a background "
+            "with several related props. Keep every surface and prop in the set theme color. "
+            "No wide empty margin and no tiny corner label. Do not recolor this one image."
+        )
         prompt_es = _safe_text(shot.get("prompt_es") or shot.get("key_message_es"))
+        if _placeholder_on_image(prompt_es):
+            prompt_es = ""
         if prompt_es and not headline_es:
             parts.append(f"On-image marketing text in Spanish (Español México): {prompt_es}")
-        elif prompt_es and headline_es and prompt_es != headline_es:
-            parts.append(f"Additional short Spanish caption if needed: {prompt_es}")
+        elif not headline_es and not prompt_es:
+            fallback_es = (shot.get("assigned_primary_message_es") or "").strip()
+            if fallback_es and not _placeholder_on_image(fallback_es):
+                parts.append(
+                    f"MANDATORY render on-image Spanish text (Español México): «{fallback_es}» — "
+                    "large, high-contrast, readable at mobile size."
+                )
+            else:
+                parts.append(
+                    "ON-IMAGE SPANISH — Read the words printed on THIS product in the reference photo. "
+                    "Write one Mexican Spanish headline for the benefit the buyer actually wants, "
+                    "a two-line reason under it, and three short proof lines about that same benefit. "
+                    "Use only words a shopper would understand. Do not invent a numbered code as the title."
+                )
+    elif shot_idx == 4:
+        no4 = (shot.get("frame4_no_text_lock_en") or "").strip()
+        if no4:
+            parts.append(no4)
 
     locale = plan.get("locale")
     if locale and str(locale).lower() not in ("user", "custom", "none", ""):

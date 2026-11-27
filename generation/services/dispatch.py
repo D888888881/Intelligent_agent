@@ -122,8 +122,9 @@ def _dispatch_task(task, job_id: int, *, prefer_inprocess: bool = False):
     if _use_inprocess_generation_dispatch(prefer_inprocess=prefer_inprocess):
         if not (prefer_inprocess or settings.CELERY_TASK_ALWAYS_EAGER):
             logger.warning(
-                "run_generation_job in-process for job=%s "
+                "%s in-process for id=%s "
                 "(no image-queue worker or Celery unavailable)",
+                getattr(task, "name", "task"),
                 job_id,
             )
         _run_in_thread()
@@ -157,6 +158,48 @@ def dispatch_next_for_user(user_id: int):
     from generation.tasks import run_generation_job
 
     _dispatch_task(run_generation_job, next_job.id)
+
+
+def dispatch_slot_refine(candidate_id: int):
+    """单张修复始终在当前进程执行。
+
+    套图可以走 image 队列；这条任务若 delay 进队列而 worker 未消费，
+    候选会一直停在 pending，中转站收不到请求。
+    """
+    import threading
+
+    from django.db import close_old_connections
+
+    def _run():
+        close_old_connections()
+        try:
+            logger.info("slot refine start candidate=%s", candidate_id)
+            from generation.services.slot_refine import run_slot_refine_candidate
+
+            run_slot_refine_candidate(candidate_id)
+        except Exception as exc:
+            logger.exception("slot refine failed candidate=%s", candidate_id)
+            from generation.models import SlotRefineCandidate
+
+            SlotRefineCandidate.objects.filter(pk=candidate_id).exclude(
+                status__in=[
+                    SlotRefineCandidate.Status.SUCCEEDED,
+                    SlotRefineCandidate.Status.APPLIED,
+                    SlotRefineCandidate.Status.DISCARDED,
+                    SlotRefineCandidate.Status.FAILED,
+                ]
+            ).update(
+                status=SlotRefineCandidate.Status.FAILED,
+                error_message=str(exc)[:2000] or "单张修复未执行",
+            )
+        finally:
+            close_old_connections()
+
+    threading.Thread(
+        target=_run,
+        name=f"slot-refine-{candidate_id}",
+        daemon=True,
+    ).start()
 
 
 def queue_position(job: GenerationJob) -> int | None:

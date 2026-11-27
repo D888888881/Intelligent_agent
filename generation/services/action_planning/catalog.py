@@ -35,7 +35,8 @@ GENERIC_ACTIONS: dict[str, dict[str, Any]] = {
         "requires_human": False,
         "lock_en": (
             "PRODUCT ACTION G03 — Product placed in a believable real-life setting at natural scale; "
-            "surface and props support the SKU physically; environment is background, product remains hero."
+            "may recline, tilt, or lay on surface per PRODUCT PHYSICAL POSE — NOT default upright tube; "
+            "environment is background, product remains hero."
         ),
     },
     "G04": {

@@ -799,16 +799,15 @@ def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
             if payoff and idx == payoff and idx != 9:
                 spec_idx = 9
             spec = dict(detail_specs.get(spec_idx) or detail_specs.get(idx) or {})
-            scene_hints = [
-                "cool studio minimal props",
-                "warm home bathroom narrative",
-                "outdoor natural light context",
-            ]
+            palette = (plan.get("listing_unified_palette_en") or plan.get("listing_color_mood_en") or "").strip()
+            temp = (plan.get("listing_color_temperature_lock_en") or "")[:160]
             base = spec.get("action_code") or f"detail_{idx}"
             spec.setdefault(
                 "action_en",
-                f"Creative detail variant — {scene_hints[batch_index % len(scene_hints)]}; "
-                f"unique layout vs prior batches for this SKU.",
+                "Creative detail — "
+                + (f"same set palette ({palette}); " if palette else "")
+                + (f"{temp} " if temp else "")
+                + "unique camera/layout vs other frames; background may be solid, studio, or real interior per frame mandate.",
             )
             spec.setdefault("action_code", base)
             spec.setdefault("human", spec.get("human") or "balanced")
@@ -883,4 +882,7 @@ def apply_visual_batch_variance(plan: dict, *, job=None) -> dict:
 
     plan = apply_product_story_locks(plan)
     plan = apply_human_presence_policy(plan, pack=pack, batch_index=batch_index)
+    from generation.services.listing_human_cast import apply_mandated_human_casts
+
+    plan = apply_mandated_human_casts(plan)
     return plan

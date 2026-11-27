@@ -6,7 +6,7 @@ from chat.models import Message
 from generation.models import GeneratedImage, GenerationJob
 from generation.services.dispatch import dispatch_next_for_user
 from generation.services.image_gen import generate_image_file
-from generation.services.model_strategy import model_family
+from generation.services.model_strategy import model_family, tune_plan_for_image_model
 import logging
 
 from generation.services.shot_plan import normalize_shot_list
@@ -124,10 +124,9 @@ def _update_assistant_message(job: GenerationJob) -> None:
 
 def _resolve_reference_attachment(job, shot, plan, image_model):
     use_ref = shot_uses_reference(shot, plan)
-    ref_att = job.reference_attachment if use_ref else None
-    if job.reference_attachment and model_family(image_model) == "gpt_image":
-        ref_att = job.reference_attachment
-    return ref_att
+    if not use_ref:
+        return None
+    return job.reference_attachment if use_ref else None
 
 
 def _fallback_reference_for_retry(job, reference_attachment, reference_images):
@@ -213,7 +212,102 @@ def _generate_shot_with_optional_violation_retry(
         raise
 
 
-def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str]:
+def _remember_open_relay_task(open_tasks: dict, index: int, exc: BaseException) -> None:
+    task_id = getattr(exc, "task_id", "") or ""
+    image_url = getattr(exc, "image_url", "") or ""
+    if task_id or image_url:
+        open_tasks[index] = {"task_id": task_id, "image_url": image_url}
+
+
+def _save_generated_bytes(job, gen_img, raw: bytes, index: int) -> None:
+    from django.core.files.base import ContentFile
+
+    from Intelligent_agent.media_store import save_image_field
+
+    content_file = ContentFile(raw, name=f"job{job.id}_{index}.png")
+    save_image_field(gen_img.file, content_file.name, content_file)
+    gen_img.status = GeneratedImage.Status.SUCCEEDED
+    gen_img.error_message = ""
+    gen_img.save()
+    job.completed_count = job.images.filter(status=GeneratedImage.Status.SUCCEEDED).count()
+    job.save(update_fields=["completed_count"])
+    _update_assistant_message(job)
+
+
+def _recover_deferred_timeout_shots(
+    job,
+    shots,
+    plan,
+    aspect_fn,
+    image_model,
+    deferred_timeouts: dict,
+    open_tasks: dict,
+) -> None:
+    """第 9 张跑完后：只回收 1–7 因本地轮询超时挂起的中转站任务。"""
+    if not deferred_timeouts:
+        return
+    from generation.services.grsai import recover_deferred_task_bytes
+
+    by_index = {int(s.get("index") or 0): s for s in shots}
+    for index in sorted(list(deferred_timeouts.keys())):
+        if index > 7:
+            deferred_timeouts.pop(index, None)
+            continue
+        info = deferred_timeouts.pop(index)
+        task_id = (info.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        gen_img = job.images.filter(index=index).first()
+        if not gen_img or (gen_img.status == GeneratedImage.Status.SUCCEEDED and gen_img.file):
+            continue
+        logger.info("job=%s recover deferred timeout shot=%s task=%s", job.id, index, task_id)
+        gen_img.status = GeneratedImage.Status.RUNNING
+        gen_img.error_message = ""
+        gen_img.save(update_fields=["status", "error_message"])
+        try:
+            raw = recover_deferred_task_bytes(
+                task_id,
+                image_url=info.get("image_url") or "",
+                model=image_model,
+            )
+            _save_generated_bytes(job, gen_img, raw, index)
+            continue
+        except Exception as exc:
+            logger.warning(
+                "job=%s deferred recover failed shot=%s task=%s: %s",
+                job.id,
+                index,
+                task_id,
+                exc,
+            )
+        shot = by_index.get(index)
+        if not shot:
+            gen_img.status = GeneratedImage.Status.FAILED
+            gen_img.error_message = "超时回收失败且缺少镜头策划"
+            gen_img.save(update_fields=["status", "error_message"])
+            continue
+        _run_one_shot(
+            job,
+            shot,
+            plan,
+            aspect_fn(shot),
+            image_model,
+            open_tasks,
+            deferred_timeouts=None,
+            allow_defer_timeout=False,
+        )
+
+
+def _run_one_shot(
+    job,
+    shot,
+    plan,
+    aspect_ratio,
+    image_model,
+    open_tasks: dict | None = None,
+    deferred_timeouts: dict | None = None,
+    allow_defer_timeout: bool = True,
+) -> tuple[bool, str]:
     """生成单张，返回 (是否成功, 错误信息)。"""
     index = int(shot.get("index", 0))
     if index <= 0:
@@ -228,7 +322,36 @@ def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str
         },
     )
     if gen_img.status == GeneratedImage.Status.SUCCEEDED and gen_img.file:
+        if open_tasks is not None:
+            open_tasks.pop(index, None)
         return True, ""
+
+    pending = (open_tasks or {}).get(index) or {}
+    if pending.get("task_id") or pending.get("image_url"):
+        from generation.services.grsai import fetch_submitted_image
+
+        gen_img.status = GeneratedImage.Status.RUNNING
+        gen_img.error_message = ""
+        gen_img.save(update_fields=["status", "error_message"])
+        try:
+            raw = fetch_submitted_image(
+                pending.get("task_id") or "",
+                image_url=pending.get("image_url") or "",
+                model=image_model,
+                max_seconds=120,
+            )
+            _save_generated_bytes(job, gen_img, raw, index)
+            if open_tasks is not None:
+                open_tasks.pop(index, None)
+            return True, ""
+        except Exception as exc:
+            if open_tasks is not None:
+                _remember_open_relay_task(open_tasks, index, exc)
+            gen_img.status = GeneratedImage.Status.FAILED
+            gen_img.error_message = str(exc)
+            gen_img.save(update_fields=["status", "error_message"])
+            _update_assistant_message(job)
+            return False, str(exc)
 
     job.refresh_from_db(fields=["cancel_requested", "status"])
     if job.cancel_requested or job.status == GenerationJob.Status.CANCELLED:
@@ -240,9 +363,20 @@ def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str
 
     from generation.services.job_references import reference_image_payloads_for_shot
 
-    ref_payloads = reference_image_payloads_for_shot(job, shot)
     ref_att = _resolve_reference_attachment(job, shot, plan, image_model)
+    if shot_uses_reference(shot, plan):
+        ref_payloads = reference_image_payloads_for_shot(job, shot)
+    else:
+        ref_payloads = []
     use_multi = len(ref_payloads) > 0
+    if index == 4 and (plan.get("plan_template") or "") == "tk_mx_ecommerce_9":
+        from generation.services.listing_frame4_contract import apply_frame4_comparison_contract
+
+        plan = apply_frame4_comparison_contract(plan)
+        for s in plan.get("shots") or []:
+            if int(s.get("index") or 0) == 4:
+                shot = s
+                break
     prompt = build_shot_generation_prompt(
         shot, plan, attach_reference=bool(use_multi or ref_att)
     )
@@ -261,7 +395,9 @@ def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str
             aspect_ratio=aspect_ratio,
             image_model=image_model,
         )
-        gen_img.file.save(content_file.name, content_file, save=False)
+        from Intelligent_agent.media_store import save_image_field
+
+        save_image_field(gen_img.file, content_file.name, content_file)
         gen_img.status = GeneratedImage.Status.SUCCEEDED
         gen_img.error_message = ""
         gen_img.save()
@@ -270,9 +406,44 @@ def _run_one_shot(job, shot, plan, aspect_ratio, image_model) -> tuple[bool, str
         ).count()
         job.save(update_fields=["completed_count"])
         _update_assistant_message(job)
+        if open_tasks is not None:
+            open_tasks.pop(index, None)
         return True, ""
     except Exception as exc:
         err = str(exc)
+        from generation.services.grsai import (
+            GrsaiRemoteTaskError,
+            is_deferrable_shot_index,
+            is_per_shot_poll_timeout,
+        )
+
+        task_id = getattr(exc, "task_id", "") or ""
+        if (
+            allow_defer_timeout
+            and deferred_timeouts is not None
+            and is_deferrable_shot_index(index)
+            and is_per_shot_poll_timeout(exc)
+            and task_id
+        ):
+            deferred_timeouts[index] = {
+                "task_id": task_id,
+                "image_url": getattr(exc, "image_url", "") or "",
+            }
+            gen_img.status = GeneratedImage.Status.FAILED
+            gen_img.error_message = f"单张超时待回收 task={task_id}"
+            gen_img.save(update_fields=["status", "error_message"])
+            _update_assistant_message(job)
+            logger.info(
+                "job=%s shot=%s poll timeout — defer task=%s, continue pipeline",
+                job.id,
+                index,
+                task_id,
+            )
+            return False, err
+        if open_tasks is not None and not (
+            isinstance(exc, GrsaiRemoteTaskError) and is_per_shot_poll_timeout(exc)
+        ):
+            _remember_open_relay_task(open_tasks, index, exc)
         gen_img.status = GeneratedImage.Status.FAILED
         gen_img.error_message = err
         gen_img.save(update_fields=["status", "error_message"])
@@ -309,6 +480,22 @@ def run_generation_job(self, job_id: int):
         _update_assistant_message(job)
 
     plan = job.plan_json or {}
+    from generation.services.listing_bundle import is_listing_ecommerce_plan
+    from generation.services.listing_run_prepare import prepare_listing_plan_for_generation
+
+    if is_listing_ecommerce_plan(plan):
+        plan = prepare_listing_plan_for_generation(plan, job=job)
+    image_model = plan.get("image_model") or None
+    has_ref = bool(job.reference_attachment_id) or bool(job.reference_attachment_ids)
+    if plan.get("shots"):
+        plan = tune_plan_for_image_model(plan, image_model, has_reference=has_ref)
+        if is_listing_ecommerce_plan(plan):
+            from generation.services.product_usage_semantics import finalize_frame4_product_truth
+
+            plan = finalize_frame4_product_truth(plan)
+        job.plan_json = plan
+        job.save(update_fields=["plan_json"])
+
     shots = normalize_shot_list(
         plan.get("shots") or [],
         job.image_count,
@@ -316,7 +503,6 @@ def run_generation_job(self, job_id: int):
     )
     shots = sorted(shots, key=lambda s: int(s.get("index") or 0))
     aspect_ratio = plan.get("aspect_ratio", "1:1")
-    image_model = plan.get("image_model") or None
 
     def _aspect_for_shot(shot: dict) -> str:
         try:
@@ -342,6 +528,8 @@ def run_generation_job(self, job_id: int):
         return aspect_ratio
     failed_count = 0
     last_error = ""
+    open_tasks: dict[int, dict] = {}
+    deferred_timeouts: dict[int, dict] = {}
 
     for shot in shots:
         if job.cancel_requested:
@@ -349,10 +537,33 @@ def run_generation_job(self, job_id: int):
         job.refresh_from_db(fields=["cancel_requested"])
         if job.cancel_requested:
             break
-        ok, err = _run_one_shot(job, shot, plan, _aspect_for_shot(shot), image_model)
+        ok, err = _run_one_shot(
+            job,
+            shot,
+            plan,
+            _aspect_for_shot(shot),
+            image_model,
+            open_tasks,
+            deferred_timeouts,
+        )
         if not ok:
-            failed_count += 1
+            idx = int(shot.get("index") or 0)
+            if idx not in deferred_timeouts:
+                failed_count += 1
             last_error = err or last_error
+
+    if deferred_timeouts and not job.cancel_requested:
+        _recover_deferred_timeout_shots(
+            job,
+            shots,
+            plan,
+            _aspect_for_shot,
+            image_model,
+            deferred_timeouts,
+            open_tasks,
+        )
+        job.refresh_from_db(fields=["completed_count"])
+        failed_count = job.images.filter(status=GeneratedImage.Status.FAILED).count()
 
     extra_passes = max(0, int(getattr(settings, "GRSAI_JOB_FAILED_SHOT_RETRIES", 3)))
     for pass_no in range(extra_passes):
@@ -364,6 +575,7 @@ def run_generation_job(self, job_id: int):
         failed_indices = set(
             job.images.filter(status=GeneratedImage.Status.FAILED).values_list("index", flat=True)
         )
+        failed_indices -= set(deferred_timeouts.keys())
         if not failed_indices:
             break
         logger.info(
@@ -380,11 +592,27 @@ def run_generation_job(self, job_id: int):
             job.refresh_from_db(fields=["cancel_requested"])
             if job.cancel_requested:
                 break
-            ok, err = _run_one_shot(job, shot, plan, _aspect_for_shot(shot), image_model)
+            ok, err = _run_one_shot(
+                job,
+                shot,
+                plan,
+                _aspect_for_shot(shot),
+                image_model,
+                open_tasks,
+                deferred_timeouts,
+                allow_defer_timeout=False,
+            )
             if ok:
                 failed_count = max(0, failed_count - 1)
             elif err:
                 last_error = err
+            from Intelligent_agent.media_store import is_object_storage_unavailable
+
+            if is_object_storage_unavailable(Exception(err or last_error)):
+                logger.warning("job=%s 对象存储不可用，停止整套重试", job.id)
+                break
+        if is_object_storage_unavailable(Exception(last_error)):
+            break
         if not job.images.filter(status=GeneratedImage.Status.FAILED).exists():
             break
 
